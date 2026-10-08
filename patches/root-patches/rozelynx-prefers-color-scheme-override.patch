@@ -1,0 +1,27 @@
+--- a/dom/base/Document.cpp
++++ b/dom/base/Document.cpp
+@@ -20801,6 +20801,24 @@
+ }
+ 
+ ColorScheme Document::PreferredColorScheme(IgnoreRFP aIgnoreRFP) const {
++  // RozeLynx: honor an explicit per-window prefers-color-scheme override
++  // (BrowsingContext.prefersColorSchemeOverride) before the RFP spoof.
++  // The override is only settable by privileged chrome code (DevTools
++  // color-scheme emulation, LightweightThemeConsumer, the RozeLynx
++  // experiment API); content can never set it, so honoring it does not
++  // weaken fingerprinting protection. Without this, RFP forces light for
++  // every content document and PWA app windows can never go dark.
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    switch (bc->Top()->PrefersColorSchemeOverride()) {
++      case PrefersColorSchemeOverride::Dark:
++        return ColorScheme::Dark;
++      case PrefersColorSchemeOverride::Light:
++        return ColorScheme::Light;
++      case PrefersColorSchemeOverride::None:
++        break;
++    }
++  }
++
+   if (ShouldResistFingerprinting(RFPTarget::CSSPrefersColorScheme) &&
+       aIgnoreRFP == IgnoreRFP::No) {
+     return ColorScheme::Light;

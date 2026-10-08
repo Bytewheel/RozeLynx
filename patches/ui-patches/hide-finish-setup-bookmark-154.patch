@@ -1,0 +1,11 @@
+--- a/browser/components/asrouter/modules/OnboardingMessageProvider.sys.mjs
++++ b/browser/components/asrouter/modules/OnboardingMessageProvider.sys.mjs
+@@ -3008,7 +3008,7 @@
+     },
+     priority: 3,
+     targeting:
+-      "'messaging-system-action.easyChecklist.open' | preferenceValue == true",
++      "false",
+     triggers: [
+       {
+         id: "preferenceObserver",

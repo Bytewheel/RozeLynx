@@ -1,0 +1,37 @@
+/* RozeLynx SSB window chrome rules.
+ * Applied when a window was opened with `rozelynx --ssb <url>` (the
+ * SsbCommandLineHandler sets ssb-mode="true" on the window's <html>), or from
+ * a PWA launch (rozelynxWindows.setSsbMode). Hides the tab strip and the
+ * navigation toolbar so PWA windows look and behave like real application
+ * windows. The tab strip reappears only when the window holds more than one
+ * tab (ssb-multi-tab="true", maintained by rozelynxWindows.setSsbTabs);
+ * #nav-bar and #PersonalToolbar stay hidden unconditionally.
+ *
+ * No default @namespace here: the window root <html> is XHTML, and a default
+ * XUL namespace would keep the :root[...] selectors below from matching.
+ * The targets are all ID selectors, which are namespace-agnostic.
+ */
+
+:root[ssb-mode="true"] #TabsToolbar,
+:root[ssb-mode="true"] #tabbrowser-tabs {
+  display: none !important;
+}
+
+/* Multi-tab SSB windows get the tab strip back (still no URL bar). */
+:root[ssb-mode="true"][ssb-multi-tab="true"] #TabsToolbar {
+  display: flex !important;
+}
+
+:root[ssb-mode="true"][ssb-multi-tab="true"] #tabbrowser-tabs {
+  display: flex !important;
+}
+
+:root[ssb-mode="true"] #nav-bar,
+:root[ssb-mode="true"] #PersonalToolbar {
+  display: none !important;
+}
+
+/* Keep the window chrome compact and always show the close controls */
+:root[ssb-mode="true"] #titlebar {
+  -moz-window-dragging: drag;
+}

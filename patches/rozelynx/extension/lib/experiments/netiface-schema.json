@@ -1,0 +1,158 @@
+[
+  {
+    "namespace": "rozelynxNetIface",
+    "functions": [
+      {
+        "name": "getInterfaces",
+        "type": "function",
+        "async": true,
+        "description": "Enumerate network interfaces available for binding.",
+        "parameters": []
+      },
+      {
+        "name": "getEffective",
+        "type": "function",
+        "async": true,
+        "description": "Resolve the effective interface assignment for a tab. Returns {iface, layer} where layer is 'tab', 'url' (a per-URL rule matched), 'container', 'profile' or ''. The tab's own URL is passed to the service so the URL-rule layer is included; hosts that must never be bound (loopback/LAN/localhost/*.local) never match a rule.",
+        "parameters": [
+          { "name": "tabId", "type": "integer" }
+        ]
+      },
+      {
+        "name": "setAssignment",
+        "type": "function",
+        "async": true,
+        "description": "Assign a network interface to a tab (native binding) and persist it as a sessionstore tab value so it survives restarts. An empty ifaceName clears the tab's binding, falling back to container/profile/unbound.",
+        "parameters": [
+          { "name": "tabId", "type": "integer" },
+          { "name": "ifaceName", "type": "string" }
+        ]
+      },
+      {
+        "name": "getTabInfo",
+        "type": "function",
+        "async": true,
+        "description": "Resolve a tab to {browserId, userContextId, tabValue} - the native keys assignments by browserId; tabValue is the persisted sessionstore binding (survives restore).",
+        "parameters": [
+          { "name": "tabId", "type": "integer" }
+        ]
+      },
+      {
+        "name": "setProfileInterface",
+        "type": "function",
+        "async": true,
+        "description": "Set the profile-layer default interface (empty string clears it).",
+        "parameters": [
+          { "name": "ifaceName", "type": "string" }
+        ]
+      },
+      {
+        "name": "getProfileInterface",
+        "type": "function",
+        "async": true,
+        "description": "Get the profile-layer default interface (empty string when unset).",
+        "parameters": []
+      },
+      {
+        "name": "getIfaceTrrURI",
+        "type": "function",
+        "async": true,
+        "description": "Get the DoH TRR URI override for an interface.",
+        "parameters": [
+          { "name": "ifaceName", "type": "string" }
+        ]
+      },
+      {
+        "name": "getUrlRules",
+        "type": "function",
+        "async": true,
+        "description": "Read the per-URL interface rules. Returns {enabled, rules} where rules is [{index, pattern, iface, enabled}], sorted by index. Backed by the rozelynx.netiface.urlrule.<n>.* prefs, so about:config stays the source of truth.",
+        "parameters": []
+      },
+      {
+        "name": "setUrlRules",
+        "type": "function",
+        "async": true,
+        "description": "Replace the whole per-URL rule list. Writing the prefs is enough to reach the native service (its pref observer rebuilds the rule list); indices past the new length are cleared so a deleted row cannot linger. Returns {ok, error, enabled, rules} with rules re-read from the prefs.",
+        "parameters": [
+          {
+            "name": "rules",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pattern": { "type": "string" },
+                "iface": { "type": "string" },
+                "enabled": { "type": "boolean" }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "setUrlRulesEnabled",
+        "type": "function",
+        "async": true,
+        "description": "Turn the per-URL rule layer on or off (pref rozelynx.netiface.urlrules.enabled). Returns {ok, error, enabled}.",
+        "parameters": [
+          { "name": "enabled", "type": "boolean" }
+        ]
+      },
+      {
+        "name": "matchUrlRule",
+        "type": "function",
+        "async": true,
+        "description": "Ask the native service which per-URL rule a URL hits. Returns {matched, index, pattern, iface} from the service's own matcher (not a re-implementation), so a preview cannot disagree with the resolver. An empty iface means the rule forces default routing.",
+        "parameters": [
+          { "name": "url", "type": "string" }
+        ]
+      },
+      {
+        "name": "ensureChip",
+        "type": "function",
+        "async": true,
+        "description": "Create the netiface status chip in a window's tab toolbar (no-op when already present).",
+        "parameters": [
+          { "name": "windowId", "type": "integer" }
+        ]
+      },
+      {
+        "name": "updateChip",
+        "type": "function",
+        "async": true,
+        "description": "Update the chip's label, tooltip text and icon in a window.",
+        "parameters": [
+          { "name": "windowId", "type": "integer" },
+          { "name": "text", "type": "string" },
+          { "name": "tooltip", "type": "string" },
+          { "name": "icon", "type": "string" }
+        ]
+      },
+      {
+        "name": "removeChip",
+        "type": "function",
+        "async": true,
+        "description": "Remove the netiface chip from a window.",
+        "parameters": [
+          { "name": "windowId", "type": "integer" }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "name": "onChipClick",
+        "type": "function",
+        "description": "Fired when the user clicks the netiface chip. The extension opens its picker popup in response.",
+        "parameters": [
+          {
+            "name": "info",
+            "type": "object",
+            "properties": {
+              "windowId": { "type": "integer" }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

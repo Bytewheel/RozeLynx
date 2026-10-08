@@ -1,0 +1,35 @@
+--- a/browser/components/extensions/parent/ext-browserAction.js
++++ b/browser/components/extensions/parent/ext-browserAction.js
+@@ -192,6 +192,15 @@
+ 
+   build() {
+     let { extension } = this;
++    // In-place xpi swaps (sideload update-restart during startup: XPIDatabase
++    // applyStartupChange "changed on disk after being already started") can reach
++    // this point while the previous instance's widget is still in gPalette.
++    // normalizeWidget() rejects duplicate ids with null, the public createWidget()
++    // then throws on wrapWidget(undefined), and XPIProvider.callBootstrapMethod()
++    // SWALLOWS the exception — leaving the whole extension enabled-but-dead (no
++    // event page, no chip, no listeners, no self-heal). Destroy the stale
++    // leftover first; destroyWidget on a missing id is a safe no-op.
++    try { CustomizableUI.destroyWidget(this.id); } catch (e) {}
+     let widget = CustomizableUI.createWidget({
+       id: this.id,
+       viewId: this.viewId,
+--- a/browser/components/customizableui/CustomizableUI.sys.mjs
++++ b/browser/components/customizableui/CustomizableUI.sys.mjs
+@@ -6280,9 +6280,11 @@
+    * @returns {WidgetGroupWrapper|XULWidgetGroupWrapper}
+    */
+   createWidget(aProperties, aSource) {
+-    return CustomizableUIInternal.wrapWidget(
+-      CustomizableUIInternal.createWidget(aProperties, aSource)
+-    );
++    let widgetId = CustomizableUIInternal.createWidget(aProperties, aSource);
++    if (!widgetId) {
++      return null; // normalizeWidget rejected the properties (duplicate/illegal id)
++    }
++    return CustomizableUIInternal.wrapWidget(widgetId);
+   },
+   /**
+    * Destroy a widget

@@ -1,0 +1,46 @@
+[
+  {
+    "namespace": "rozelynxPrefs",
+    "functions": [
+      {
+        "name": "setPrefs",
+        "type": "function",
+        "async": true,
+        "description": "Live-apply a map of about:config preferences. Values may be boolean, string or integer.",
+        "parameters": [
+          {
+            "name": "prefs",
+            "type": "object",
+            "additionalProperties": { "type": "any" }
+          }
+        ]
+      },
+      {
+        "name": "getPrefs",
+        "type": "function",
+        "async": true,
+        "description": "Read the current values of a list of preferences.",
+        "parameters": [
+          {
+            "name": "names",
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        ]
+      },
+      {
+        "name": "clearPrefs",
+        "type": "function",
+        "async": true,
+        "description": "Clear user values for a list of preferences. A pref with a default falls back to it.",
+        "parameters": [
+          {
+            "name": "names",
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        ]
+      }
+    ]
+  }
+]

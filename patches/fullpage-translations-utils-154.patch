@@ -1,0 +1,29 @@
+--- a/services/settings/Utils.sys.mjs
++++ b/services/settings/Utils.sys.mjs
+@@ -328,6 +328,26 @@
+    * console.log(attachmentsURL);
+    */
+   async baseAttachmentsURL(options = {}) {
++    // LibreWolf: consumers may request a custom server URL (positionally,
++    // as Downloader.downloadAsBytes does, or via the options object). The
++    // pref cache below is keyed on Utils.SERVER_URL, so custom servers
++    // resolve directly instead.
++    const serverUrl =
++      typeof options === "string" ? options : (options.serverUrl ?? null);
++    if (serverUrl) {
++      const resp = await Utils.fetch(`${serverUrl}/`);
++      if (!resp.ok) {
++        throw new Error(`Failed to fetch server info: ${resp.status}`);
++      }
++      const serverInfo = await resp.json();
++      const {
++        capabilities: {
++          attachments: { base_url },
++        },
++      } = serverInfo;
++      return base_url;
++    }
++
+     if (Utils._baseAttachmentsURLPromise) {
+       // Wait for ongoing call to finish.
+       return Utils._baseAttachmentsURLPromise;

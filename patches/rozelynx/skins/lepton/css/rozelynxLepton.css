@@ -1,0 +1,89 @@
+/* RozeLynx Lepton Skin - Browser Chrome (Firefox 153+)
+ * Compact, purple-accented browser chrome. Written against the Firefox 153
+ * chrome tokens (tabbrowser/tabs.css, urlbar-searchbar.css) because the
+ * upstream Lepton stylesheet targets pre-128 UI and most of its selectors
+ * no longer match. Imported from userChrome.css.
+ */
+/* No default @namespace here: the browser window document's root element
+ * is <html> in the XHTML namespace, and a default XUL namespace would stop
+ * every `:root` selector (and thus all custom properties below) from ever
+ * matching. Type selectors are class-based or ns-agnostic (IDs). */
+:root {
+  --rozelynx-accent: #8B5CF6;
+  --rozelynx-accent-hover: #7C3AED;
+  --rozelynx-accent-active: #6D28D9;
+  --rozelynx-on-accent: #FFFFFF;
+
+  /* Compact tabs (default 153: 32px min + 2px block margin) */
+  --tab-min-height: 30px !important;
+  --tab-block-margin: 1px !important;
+  --tab-border-radius: 6px !important;
+
+  /* Compact urlbar (default 153: 32px) */
+  --urlbar-min-height: 28px !important;
+}
+
+/* FF153 defines --urlbar-background-border-radius on the .urlbar element
+ * itself, which beats any inherited :root declaration, so it must be set
+ * directly on the urlbar. */
+#urlbar {
+  --urlbar-background-border-radius: 6px !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rozelynx-accent: #A78BFA;
+    --rozelynx-accent-hover: #8B5CF6;
+    --rozelynx-accent-active: #7C3AED;
+    --rozelynx-on-accent: #1E1B2E;
+  }
+}
+
+/* --- Selected tab: accent block with on-accent label ------------------ */
+.tabbrowser-tab[selected] .tab-background {
+  background-color: var(--rozelynx-accent) !important;
+  background-image: none !important;
+}
+
+.tabbrowser-tab[selected] .tab-content {
+  color: var(--rozelynx-on-accent) !important;
+}
+
+.tabbrowser-tab[selected] .tab-close-button {
+  color: var(--rozelynx-on-accent) !important;
+  fill: var(--rozelynx-on-accent) !important;
+}
+
+/* --- Hover: subtle accent tint (153 token --tab-background-color-hover) */
+:root {
+  --tab-background-color-hover:
+    color-mix(in srgb, var(--rozelynx-accent) 22%, transparent) !important;
+}
+
+/* --- Urlbar focus/open ring in accent -------------------------------- */
+/* FF153: the background element is .urlbar-background (no id). */
+#urlbar[focused] > .urlbar-background,
+#urlbar[open] > .urlbar-background {
+  outline: 2px solid var(--rozelynx-accent) !important;
+  outline-offset: -2px !important;
+}
+
+/* --- Toolbar buttons: accent on hover -------------------------------- */
+.toolbarbutton-1:not([disabled]):hover > .toolbarbutton-icon {
+  background-color: color-mix(in srgb, var(--rozelynx-accent) 20%, transparent) !important;
+}
+
+/* --- Compact bookmarks toolbar (when visible) ------------------------- */
+#PersonalToolbar {
+  min-height: 24px !important;
+}
+
+/* --- Selected tab indicator line (subtle, for contrast themes) -------- */
+.tabbrowser-tab[selected] .tab-stack::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--tab-border-radius);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rozelynx-accent) 45%, transparent);
+  pointer-events: none;
+}

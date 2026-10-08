@@ -1,0 +1,93 @@
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "nsISupports.idl"
+#include "nsIDNSAdditionalInfo.idl"
+
+[scriptable, uuid(9f4c1a7e-5b2d-4e8a-b6f3-2c8d5a1e7b94)]
+interface nsIRozeLynxNetIfaceInfo : nsISupports
+{
+  readonly attribute AUTF8String name;
+  readonly attribute boolean up;
+  readonly attribute boolean hasIPv4;
+  readonly attribute boolean hasIPv6;
+  readonly attribute boolean loopback;
+};
+
+[scriptable, builtinclass, uuid(c3d8e2f1-7a4b-46c9-9e5d-8b1a6f2d3c47)]
+interface nsIRozeLynxNetIface : nsISupports
+{
+  /**
+   * RozeLynx per-profile / per-container / per-URL / per-tab network
+   * interface assignment.  Resolves (most specific wins):
+   *
+   *   tab assignment (runtime map, setTabInterface)
+   *     > URL rule (prefs rozelynx.netiface.urlrule.<n>.*)
+   *       > container assignment (pref rozelynx.netiface.container.<id>)
+   *         > profile assignment (pref rozelynx.netiface.profile)
+   *           > "" (no binding - normal routing table)
+   *
+   * Lives in the parent process (main thread only).  Binding itself happens
+   * in the socket process via SO_BINDTODEVICE on nsSocketTransport.
+   */
+
+  readonly attribute boolean supported;
+
+  /** Enumerate usable interfaces (excludes loopback, down, addressless). */
+  readonly attribute Array<nsIRozeLynxNetIfaceInfo> interfaces;
+
+  /** Runtime tab layer, keyed by BrowsingContext::BrowserId(). */
+  void setTabInterface(in uint64_t aBrowserId, in AUTF8String aIface);
+  void clearTabInterface(in uint64_t aBrowserId);
+  AUTF8String getTabInterface(in uint64_t aBrowserId);
+
+  /** Container layer — mirrors the rozelynx.netiface.container.<id> prefs. */
+  void setContainerInterface(in uint32_t aUserContextId, in AUTF8String aIface);
+  AUTF8String getContainerInterface(in uint32_t aUserContextId);
+
+  /** Profile layer — mirrors the rozelynx.netiface.profile pref. */
+  void setProfileInterface(in AUTF8String aIface);
+  AUTF8String getProfileInterface();
+
+  /**
+   * Resolve the effective assignment for a (browserId, userContextId) pair.
+   * Returns the interface name ("" = unassigned) and reports which layer
+   * produced it in aLayer: "tab", "url", "container", "profile" or "".
+   *
+   * aHost selects the URL-rule layer and is deliberately permissive: pass the
+   * tab's host ("example.com"), a host+path ("example.com/mail") or the tab's
+   * full URL ("https://example.com/mail") and all three parts are used to
+   * match a rule.  An EMPTY aHost skips the URL layer entirely, preserving
+   * the pre-URL-rule behaviour for callers that cannot supply a host.  Hosts
+   * that must never be bound (loopback / LAN literals, localhost, *.local)
+   * never match a rule, exactly as in the socket path.
+   */
+  AUTF8String getEffective(in uint64_t aBrowserId, in uint32_t aUserContextId,
+                           in AUTF8String aHost, out AUTF8String aLayer);
+
+  /**
+   * Ask the URL-rule layer directly which rule a URL would hit, and why.
+   * Returns true when a rule matched (aIndex holds its <n>, aPattern the
+   * pattern as written, aIface its interface - "" meaning "force default
+   * routing").  Returns false when no rule applies, including for hosts that
+   * are never bindable.  This is the same matcher the socket path uses, so
+   * the extension's match preview cannot disagree with the resolver.
+   */
+  boolean matchUrlRule(in AUTF8String aUrl, out long aIndex,
+                       out AUTF8String aPattern, out AUTF8String aIface);
+
+  /**
+   * RozeLynx v13: extension DNS attribution.  Returns the DNSAdditionalInfo
+   * (per-interface resolver URL + bindIface) that browser.dns.resolve should
+   * carry for aHost, based on the interface a channel most recently used for
+   * that host.  This closes the unbound lookup seam for extensions that
+   * resolve hostnames themselves (uBlock Origin dnsResolveEnabled etc.) --
+   * those lookups otherwise land in the unpartitioned DNS partition and
+   * egress the default route.  Returns null when the host is unattributed,
+   * never-bind, the feature is disabled, or dnsAttribution is off; a null
+   * return keeps the caller's original (unbound) behavior.
+   */
+  nsIDNSAdditionalInfo additionalInfoForHost(in AUTF8String aHost);
+};

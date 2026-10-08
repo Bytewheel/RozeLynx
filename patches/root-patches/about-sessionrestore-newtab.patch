@@ -1,0 +1,218 @@
+diff -ruN a/browser/components/sessionstore/content/aboutSessionRestore.js b/browser/components/sessionstore/content/aboutSessionRestore.js
+--- a/browser/components/sessionstore/content/aboutSessionRestore.js	2026-09-27 15:33:25.556739448 -0400
++++ b/browser/components/sessionstore/content/aboutSessionRestore.js	2026-09-27 15:33:31.914630865 -0400
+@@ -9,10 +9,28 @@
+ );
+ ChromeUtils.defineESModuleGetters(this, {
+   PlacesUIUtils: "moz-src:///browser/components/places/PlacesUIUtils.sys.mjs",
++  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+   SessionStore:
+     "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
+ });
+ 
++// RozeLynx: mirror about:newtab theming. activity-stream.css switches its
++// variable set when the root element carries [lwt-newtab-brighttext]; on
++// the newtab that attribute is synced with the browser theme, here we track
++// the system color scheme (this build ships no separate toolbar theme UI).
++(function () {
++  var darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
++  function applyTheme() {
++    if (darkQuery.matches) {
++      document.documentElement.setAttribute("lwt-newtab-brighttext", "");
++    } else {
++      document.documentElement.removeAttribute("lwt-newtab-brighttext");
++    }
++  }
++  applyTheme();
++  darkQuery.addEventListener("change", applyTheme);
++})();
++
+ var gStateObject;
+ var gTreeData;
+ var gTreeInitialized = false;
+@@ -55,6 +73,42 @@
+   var errorTryAgainButton = document.getElementById("errorTryAgain");
+   errorTryAgainButton.addEventListener("command", restoreSession);
+ 
++  // RozeLynx: the about:newtab-style search bar above starts a new session
++  // on Enter. Navigating away from this page discards the pending session,
++  // same as the old "Start New Session" button - the sessionstore backup on
++  // disk is left untouched. Do NOT call restoreSession() first.
++  var searchForm = document.getElementById("rozelynx-search-form");
++  var searchInput = document.getElementById("rozelynx-search-input");
++  if (searchForm && searchInput) {
++    searchForm.addEventListener("submit", function (event) {
++      event.preventDefault();
++      var query = searchInput.value.trim();
++      if (!query) {
++        return;
++      }
++      try {
++        // FF153: the search service is an ES module (SearchService above);
++        // Services.search does not exist on this page.
++        var submission = SearchService.defaultEngine.getSubmission(query);
++        var browserWin = getBrowserWindow();
++        var loadOptions = {
++          triggeringPrincipal:
++            Services.scriptSecurityManager.createNullPrincipal({}),
++        };
++        if (submission.postData) {
++          loadOptions.postData = submission.postData;
++        }
++        browserWin.gBrowser.loadURI(
++          Services.io.newURI(submission.uri.spec),
++          loadOptions
++        );
++      } catch (e) {
++        // Fall back to the normal new-session behavior on any search error.
++        startNewSession();
++      }
++    });
++  }
++
+   // the crashed session state is kept inside a textbox so that SessionStore picks it up
+   // (for when the tab is closed or the session crashes right again)
+   var sessionData = document.getElementById("sessionData");
+diff -ruN a/browser/components/sessionstore/content/aboutSessionRestore.xhtml b/browser/components/sessionstore/content/aboutSessionRestore.xhtml
+--- a/browser/components/sessionstore/content/aboutSessionRestore.xhtml	2026-09-27 15:33:25.558198167 -0400
++++ b/browser/components/sessionstore/content/aboutSessionRestore.xhtml	2026-09-27 15:33:25.567696765 -0400
+@@ -14,6 +14,7 @@
+     <meta http-equiv="Content-Security-Policy" content="default-src chrome: resource:; img-src chrome: resource: data:; object-src 'none'" />
+     <meta name="color-scheme" content="light dark"/>
+     <title data-l10n-id="restore-page-tab-title"></title>
++    <link rel="stylesheet" href="chrome://newtab/content/css/activity-stream.css" type="text/css" media="all"/>
+     <link rel="stylesheet" href="chrome://global/skin/in-content/info-pages.css" type="text/css" media="all"/>
+     <link rel="stylesheet" href="chrome://browser/skin/aboutSessionRestore.css" type="text/css" media="all"/>
+     <link rel="icon" href="chrome://global/skin/icons/info.svg"/>
+@@ -22,17 +23,32 @@
+     <script src="chrome://browser/content/aboutSessionRestore.js"/>
+   </head>
+ 
+-  <body>
++  <body class="activity-stream">
++
++    <!-- RozeLynx: static copy of the about:newtab content block (logo +
++         search bar). On the real about:newtab, top sites and snippets render
++         dynamically into .newtab-main; a static copy is acceptable for v1. -->
++    <div class="newtab-main">
++      <div class="non-collapsible-section">
++        <div class="search-wrapper visible-logo">
++          <h1 class="logo-and-wordmark-wrapper">
++            <div class="logo-and-wordmark" role="img">
++              <div class="logo"></div>
++              <div class="wordmark"></div>
++            </div>
++          </h1>
++          <div class="search-inner-wrapper">
++            <form id="rozelynx-search-form" role="search">
++              <input id="rozelynx-search-input" type="search"
++                     placeholder="Search the web" aria-label="Search the web"/>
++            </form>
++          </div>
++        </div>
++      </div>
++    </div>
+ 
+     <div class="container tab-list-tree-container">
+       <div class="description-wrapper">
+-        <div class="title">
+-          <h1 class="title-text" data-l10n-id="restore-page-error-title"></h1>
+-        </div>
+-        <div class="description">
+-          <p data-l10n-id="restore-page-problem-desc"></p>
+-          <p data-l10n-id="restore-page-try-this"></p>
+-        </div>
+         <button id="tabsToggle" class="tabs-hidden">
+           <span id="showTabs" data-l10n-id="restore-page-show-tabs"></span>
+           <span id="hideTabs" data-l10n-id="restore-page-hide-tabs"></span>
+@@ -48,8 +64,6 @@
+       </xul:tree>
+       <div class="button-container">
+ #ifdef XP_UNIX
+-        <xul:button id="errorCancel"
+-                data-l10n-id="restore-page-close-button"/>
+         <xul:button class="primary"
+                 id="errorTryAgain"
+                 data-l10n-id="restore-page-try-again-button"/>
+@@ -57,8 +71,6 @@
+         <xul:button class="primary"
+                 id="errorTryAgain"
+                 data-l10n-id="restore-page-try-again-button"/>
+-        <xul:button id="errorCancel"
+-                data-l10n-id="restore-page-close-button"/>
+ #endif
+       </div>
+       <!-- holds the session data for when the tab is closed -->
+diff -ruN a/browser/themes/shared/aboutSessionRestore.css b/browser/themes/shared/aboutSessionRestore.css
+--- a/browser/themes/shared/aboutSessionRestore.css	2026-09-27 15:33:25.559938128 -0400
++++ b/browser/themes/shared/aboutSessionRestore.css	2026-09-27 15:33:25.567821041 -0400
+@@ -53,3 +53,69 @@
+ .button-container {
+   text-align: end;
+ }
++
++/* RozeLynx: about:newtab-style header block above the restore controls.
++ * The .newtab-main subtree is a static copy of about:newtab's logo+search;
++ * activity-stream.css provides the base styles. */
++
++.newtab-main {
++  display: flex;
++  flex-direction: column;
++  justify-content: flex-start;
++  width: 100%;
++  /* Match about:newtab's only-search layout: the outer wrapper there has
++   * 48px padding and the search block another 48px top margin. */
++  margin-block-start: clamp(48px, 12vh, 128px);
++}
++
++.newtab-main .search-inner-wrapper {
++  height: 48px;
++}
++
++#rozelynx-search-form {
++  display: block;
++  width: 100%;
++  height: 100%;
++  margin: 0;
++}
++
++#rozelynx-search-input {
++  width: 100%;
++  height: 100%;
++  box-sizing: border-box;
++  border-radius: 8px;
++  border: 1px solid var(--newtab-border-color,
++                      color-mix(in srgb, currentColor 20%, transparent));
++  background-color: var(--newtab-background-color-secondary,
++                       var(--newtab-background-color, #f9f9fb));
++  color: var(--newtab-text-primary-color, currentColor);
++  padding: 0 16px;
++  font-size: 15px;
++  box-shadow: var(--newtab-search-shadow,
++                  0 1px 4px rgba(12, 12, 13, 0.1));
++}
++
++#rozelynx-search-input:focus-visible {
++  outline: 2px solid var(--newtab-primary-action-background, #8b5cf6);
++  outline-offset: -1px;
++}
++
++/* Keep the restore controls grouped below the search block. */
++body.activity-stream .container {
++  margin-block-start: var(--space-xlarge, 32px);
++  width: min(var(--in-content-container-max-width, 960px), 100%);
++}
++
++body.activity-stream .description-wrapper {
++  text-align: center;
++}
++
++#tabsToggle {
++  padding-inline-end: 45px;
++}
++
++/* Dark-mode parity: both pages respect system dark; ensure the restore
++ * controls stay readable over the activity-stream background. */
++body.activity-stream .container {
++  color: var(--newtab-text-primary-color, currentColor);
++}

@@ -1,0 +1,65 @@
+diff --git a/browser/locales/en-US/browser/preferences/preferences.ftl b/browser/locales/en-US/browser/preferences/preferences.ftl
+--- a/browser/locales/en-US/browser/preferences/preferences.ftl
++++ b/browser/locales/en-US/browser/preferences/preferences.ftl
+@@ -1866,4 +1866,61 @@
+ cookie-banner-blocker-checkbox-label =
+     .label = Automatically refuse cookie banners
+ 
++# LibreWolf Settings pane
++
++pane-librewolf-title2 = LibreWolf
++
++librewolf-header = LibreWolf Settings
++
++librewolf-footer = LibreWolf Information
++
++librewolf-general-heading2 =
++    .label = General
++
++librewolf-extension-update-checkbox2 =
++    .label = Disable Extension Updates
++
++librewolf-sync-checkbox2 =
++    .label = Disable Firefox Accounts and Sync
++
++librewolf-autocopy-checkbox2 =
++    .label = Enable Clipboard Autocopy
++
++librewolf-styling-checkbox2 =
++    .label = Allow Custom Stylesheets
++
++librewolf-network-heading2 =
++    .label = Networking
++
++librewolf-ipv6-checkbox2 =
++    .label = Disable IPv6
++
++librewolf-privacy-heading2 =
++    .label = Privacy
++
++librewolf-xorigin-ref-checkbox2 =
++    .label = Cross-Origin Referer Policy
++
++librewolf-broken-heading2 =
++    .label = Fingerprinting Protection
++
++librewolf-rfp-checkbox2 =
++    .label = Resist Fingerprinting
++
++librewolf-letterboxing-checkbox2 =
++    .label = Letterboxing
++
++librewolf-webgl-checkbox2 =
++    .label = WebGL Prompt
++
++librewolf-webgl-prompt-checkbox2 =
++    .label = Hide WebGL Prompt
++
++librewolf-config-link =
++    .label = Open about:config
++
++librewolf-open-profile =
++    .label = Open Profile Directory
++
++librewolf-rfp-warning =
++    .value = Theme appearance may be overridden by Resist Fingerprinting.

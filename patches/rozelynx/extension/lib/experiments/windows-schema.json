@@ -1,0 +1,168 @@
+[
+  {
+    "namespace": "rozelynxWindows",
+    "functions": [
+      {
+        "name": "setSsbMode",
+        "type": "function",
+        "async": true,
+        "description": "Mark/unmark an extension window with ssb-mode so userChrome (ssbChrome.css) renders it as a standalone app window.",
+        "parameters": [
+          {
+            "name": "windowId",
+            "type": "integer"
+          },
+          {
+            "name": "enabled",
+            "type": "boolean"
+          }
+        ]
+      },
+      {
+        "name": "setSsbTabs",
+        "type": "function",
+        "async": true,
+        "description": "Show/hide the tab strip in an SSB window by setting/removing the ssb-multi-tab attribute (ssbChrome.css shows the strip only when it is present).",
+        "parameters": [
+          {
+            "name": "windowId",
+            "type": "integer"
+          },
+          {
+            "name": "show",
+            "type": "boolean"
+          }
+        ]
+      },
+      {
+        "name": "setPrefersColorScheme",
+        "type": "function",
+        "async": true,
+        "description": "Override prefers-color-scheme for the selected tab of a window: dark, light, none (follow system), or auto (follow the chrome dark preference).",
+        "parameters": [
+          {
+            "name": "windowId",
+            "type": "integer"
+          },
+          {
+            "name": "scheme",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "getProfilePath",
+        "type": "function",
+        "async": true,
+        "description": "Get the absolute path of the running profile's directory (ProfD) as {ok, path}. A --profile command line identifies a remote instance by profile path, so a generated .desktop entry needs this to relaunch in the profile that created it.",
+        "parameters": []
+      },
+      {
+        "name": "isTaskbarAvailable",
+        "type": "function",
+        "async": true,
+        "description": "Whether the compiled RozeLynxLinuxTaskbar XPCOM component (@bytewheel.org/pwa/linux-taskbar;1) is present, as {ok, available, error}. It is only built with USE=pwa on a GTK widget, so a caller can degrade once instead of per call.",
+        "parameters": []
+      },
+      {
+        "name": "setWindowClass",
+        "type": "function",
+        "async": true,
+        "description": "Set a window's WM_CLASS through the native taskbar component, which is what makes the window group under a launcher entry's StartupWMClass. Returns {ok} or {ok:false, error}.",
+        "parameters": [
+          {
+            "name": "windowId",
+            "type": "integer"
+          },
+          {
+            "name": "windowClass",
+            "type": "string"
+          },
+          {
+            "name": "windowTitle",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "writeIconFile",
+        "type": "function",
+        "async": true,
+        "description": "Decode a base64 image data: URL and write it to <profile>/pwa-icons/<fileName>, returning {ok, path, bytes}. The native icon setter takes a filesystem path for gdk-pixbuf, while a PWA's manifest icon is only available as a data: URL, so the parent process materialises it.",
+        "parameters": [
+          {
+            "name": "dataUrl",
+            "type": "string"
+          },
+          {
+            "name": "fileName",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "setWindowIconFromPath",
+        "type": "function",
+        "async": true,
+        "description": "Set a window's icon from a PNG/JPEG/... file on disk, through the native taskbar component. Returns {ok} or {ok:false, error}.",
+        "parameters": [
+          {
+            "name": "windowId",
+            "type": "integer"
+          },
+          {
+            "name": "iconPath",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "writeDesktopEntry",
+        "type": "function",
+        "async": true,
+        "description": "Write a PWA's generated .desktop entry to $XDG_DATA_HOME/applications (default ~/.local/share/applications), created if missing, mode 0644, UTF-8. A WebExtension has no filesystem API, so the parent does it. The name is sanitised to a file name, the .desktop suffix is forced, and content that does not start with [Desktop Entry] is refused. Returns {ok, path, name, bytes} or {ok:false, error}.",
+        "parameters": [
+          {
+            "name": "fileName",
+            "type": "string"
+          },
+          {
+            "name": "content",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "removeDesktopEntry",
+        "type": "function",
+        "async": true,
+        "description": "Delete a .desktop entry written by writeDesktopEntry from the same XDG applications directory. A file that is not there answers {ok:true, removed:false} rather than an error, so uninstalling twice is not a failure. Returns {ok, path, name, removed} or {ok:false, error}.",
+        "parameters": [
+          {
+            "name": "fileName",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "hasDesktopEntry",
+        "type": "function",
+        "async": true,
+        "description": "Report whether a PWA's generated .desktop entry exists in $XDG_DATA_HOME/applications, as {ok, path, name, exists}. This is the read half of writeDesktopEntry/removeDesktopEntry: a reconcile pass needs to know which installed apps still have no launcher entry, because the only other way to get one was to reinstall the app.",
+        "parameters": [
+          {
+            "name": "fileName",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "ssbHandlerStatus",
+        "type": "function",
+        "async": true,
+        "description": "Is the --ssb command-line handler (@mozilla.org/browser/ssb/clh;1) reachable? Gecko skips a registered handler silently when its contract cannot be created, so this asks for the service directly and returns the reason when it cannot.",
+        "parameters": []
+      }
+    ]
+  }
+]

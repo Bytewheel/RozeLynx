@@ -1,0 +1,61 @@
+/* RozeLynx: the claw favicon for about:newtab in a private window.
+
+   Scope is deliberately narrow. Both conditions must hold:
+
+     :root[privatebrowsingmode]   a private window
+     .tabbrowser-tab[image$=...]  the tab whose icon is the branding mark
+
+   The second condition is how "about:newtab" is identified here. There is no
+   URL-bearing attribute on .tabbrowser-tab, so this matches on the resolved
+   icon instead. browser.js assigns newtab its icon from gPageIcons:
+
+     "about:newtab": "chrome://branding/content/icon32.png"
+
+   and Tabbrowser.setIcon() stores that string verbatim in the tab's "image"
+   attribute. gPageIcons also maps about:home, about:opentabs and
+   about:welcome to the same branding URL, so this rule covers those too --
+   they are the same "special page" surfaces and showing the claw on them in a
+   private window is consistent rather than wrong. The attribute suffix match
+   (rather than an exact string) is what keeps working if Gecko switches to
+   icon16/icon48/icon64 as the DPI changes.
+
+   Why CSS is required at all: icon32.png is a single branding file shared by
+   every window, so regular and private newtabs cannot be differed by swapping
+   the file. tabs.css sets the tab icon with
+
+     .tabbrowser-tab > .tab-content > .tab-icon-image { content: <image attr> }
+
+     so re-pointing the icon URL is the override point. It has to be a userChrome.css
+     rule rather than an omni.ja stylesheet, because browser chrome CSS is only read
+     from the profile.
+
+     How this sheet reaches the profile: it ships in browser/defaults/rozelynx and
+     the host's chrome-skin action lists it in SKIN_FILES, which symlinks it into
+     every profile's chrome dir; userChrome.css then imports it by BARE FILENAME.
+     It must not be imported as chrome://browser/skin/privateNewtabChrome.css --
+     browser/defaults/rozelynx is not a registered skin, so that URL does not
+     resolve and the rule silently does nothing. That was a real bug once.
+
+     The artwork lives in themes/shared/privatebrowsing/favicon.svg -- the
+     slot gPageIcons already maps about:privatebrowsing to, which the ebuild
+     overwrites with the claw SVG. That swap is what actually puts the claw
+     on a private window's newtab (about:privatebrowsing, NOT about:newtab);
+     this rule only extends it to the branding-icon special pages
+     (about:newtab/home/opentabs/welcome) opened inside a private window.
+
+
+   Bookmarks and sites with no favicon are deliberately untouched: they keep
+   defaultFavicon.svg (the favicon64 mark). The claw signals "private newtab",
+   it is not a blanket private-window badge. */
+
+:root[privatebrowsingmode] .tabbrowser-tab[image$="chrome://branding/content/icon32.png"]
+  > .tab-content > .tab-icon-image,
+:root[privatebrowsingmode] .tabbrowser-tab[image$="chrome://branding/content/icon16.png"]
+  > .tab-content > .tab-icon-image,
+:root[privatebrowsingmode] .tabbrowser-tab[image$="chrome://branding/content/icon48.png"]
+  > .tab-content > .tab-icon-image,
+:root[privatebrowsingmode] .tabbrowser-tab[image$="chrome://branding/content/icon64.png"]
+  > .tab-content > .tab-icon-image {
+  list-style-image: url("chrome://browser/skin/privatebrowsing/favicon.svg");
+  content: url("chrome://browser/skin/privatebrowsing/favicon.svg");
+}

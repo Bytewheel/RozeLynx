@@ -1,0 +1,28 @@
+Make the new-profile card fill its background area with the RozeLynx illustration.
+
+Upstream .new-profile-card .profile-background-image pins background-size to
+80px because assets/plus.svg is an 80x80 currentColor plus glyph. RozeLynx
+overwrites that asset with the full "create a new profile" illustration, so the
+80px pin now shrinks the whole scene. The sibling profile cards already use
+"cover" (the .profile-background-image base rule), so match them.
+
+Identical in Firefox 155 and 156.
+
+--- a/browser/components/profiles/content/profile-card.css
++++ b/browser/components/profiles/content/profile-card.css
+@@ -47,7 +47,14 @@
+   }
+ 
+   .profile-background-image {
+-    background-size: 80px;
++    /* RozeLynx: assets/plus.svg is no longer the 80x80 currentColor plus
++     * glyph, it is the full "create a new profile" illustration wrapped in
++     * an SVG at the card's own aspect ratio (see the ebuild's
++     * rozelynx_install_vector_slot call for plus.svg and
++     * branding/PLACEHOLDERS.md). Size it the same way the sibling profile
++     * cards size their artwork so it fills the 136px background area
++     * instead of being downscaled to 80px. */
++    background-size: cover;
+   }
+ 
+   .profile-details {

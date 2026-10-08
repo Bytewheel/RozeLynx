@@ -1,0 +1,34 @@
+[
+  {
+    "namespace": "rozelynxDevtools",
+    "functions": [
+      {
+        "name": "inspect",
+        "type": "function",
+        "async": true,
+        "description": "Open the native docked DevTools toolbox for the tab whose URL matches (same-tab, like the native Inspect Element). When 'mark' is given, selects the element carrying [data-rozelynx-inspect=\"<mark>\"] in the inspector (tool=inspector) or its accessible object in the accessibility panel (tool=accessibility).",
+        "parameters": [
+          {
+            "name": "options",
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "Current URL spec of the tab to inspect (matched exactly against the tab's currentURI)."
+              },
+              "mark": {
+                "type": "string",
+                "description": "Optional data-rozelynx-inspect attribute value set on the target element by the content script."
+              },
+              "tool": {
+                "type": "string",
+                "description": "Tool to raise: 'inspector' (default) or 'accessibility'."
+              }
+            },
+            "required": ["url"]
+          }
+        ]
+      }
+    ]
+  }
+]

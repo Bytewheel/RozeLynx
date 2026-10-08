@@ -1,0 +1,28 @@
+diff --git a/toolkit/xre/nsXREDirProvider.cpp b/toolkit/xre/nsXREDirProvider.cpp
+index b54980f..7ca2406 100644
+--- a/toolkit/xre/nsXREDirProvider.cpp
++++ b/toolkit/xre/nsXREDirProvider.cpp
+@@ -1345,8 +1347,6 @@ nsresult nsXREDirProvider::AppendFromAppData(nsIFile* aFile, bool aIsDotted) {
+     ToLowerCase(vendor);
+     ToLowerCase(appName);
+ 
+-    MOZ_TRY(aFile->AppendRelativeNativePath(aIsDotted ? ("."_ns + vendor)
+-                                                      : vendor));
+     MOZ_TRY(aFile->AppendRelativeNativePath(appName));
+   }
+ 
+@@ -1382,6 +1382,14 @@ bool nsXREDirProvider::LegacyHomeExists(nsIFile** aFile) {
+   rv = localDir->Exists(&exists);
+   NS_ENSURE_SUCCESS(rv, false);
+ 
++  if (exists) {
++    rv = localDir->AppendNative("profiles.ini"_ns);
++    NS_ENSURE_SUCCESS(rv, false);
++
++    rv = localDir->Exists(&exists);
++    NS_ENSURE_SUCCESS(rv, false);
++  }
++
+   // Give a chance to (3)
+   if (!exists) {
+     nsCOMPtr<nsIFile> userDir;

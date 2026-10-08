@@ -1,0 +1,1385 @@
+#!/usr/bin/env python3
+# RozeLynx native messaging host ("rozelynx_host").
+#
+# Speaks the stdio JSON protocol with the RozeLynx Features extension:
+#   -> {"action": "list"}                    list installed browsers
+#   <- {"browsers": [{"id","name","kind",   each entry found on PATH;
+#                     "terminal"?}],          CLI entries carry the preferred
+#      "terminals": [{"id","name"}]}          terminal id
+#   -> {"action": "open", "id": ..., "url": ...}
+#   <- {"ok": true} / {"ok": false, "error": ...}
+#
+# Browser/terminal tables live in browsers.sh next to this script
+# (single source shared with the open-external scheme handler).
+# All launches are logged to /tmp/rozelynx-open-external.log.
+# BROWSER_FAKE=1 in the environment disables real launches (testing).
+#
+#   -> {"action": "verify-record", "sha256": <64 hex>, "id": ..., "name": ...}
+#   <- {"ok": true} / {"ok": false, "error": ...}
+#   Appends {sha256, id, name, at} to ~/.config/rozelynx/verified-addons.json
+#   (CRX3 attestation records written by the CWS converter; consumed by the
+#   extension's auto-update attestation gate).
+#
+#   -> {"action": "list-verified"}
+#   <- {"verified": [{"sha256","id","name","at"}, ...]}
+#   Returns the contents of verified-addons.json.
+#
+#   -> {"action": "install-xpi", "id": <addon-id>, "path": <absolute xpi path>,
+#       "sha256": <64 hex>, "version": ..., "name": ...}
+#   <- {"ok": true} / {"ok": false, "error": ...}
+#   Copies the XPI into the default profile's extensions/ directory
+#   (profile-dropped XPIs are picked up by Firefox at startup only) and
+#   records the sha256 in verified-addons.json. The id must look like an
+#   extension id (a-z0-9@.-).
+#
+#   -> {"action": "profiles"}
+#   <- {"ok": true, "default": <dir path>, "profiles": [{"name", "path",
+#      "dir", "running", "default"}, ...]}
+#   Lists RozeLynx profiles. Display names come from the Profile Groups
+#   store (~/.config/rozelynx/bytewheel/rozelynx/Profile Groups/<store>.sqlite,
+#   the names the Profile Manager shows); running state is derived from each
+#   profile directory's `lock` symlink (alive PID under /proc).
+#
+#   -> {"action": "open-rozelynx-profile", "profile": <abs profile dir>,
+#       "url": ..., "iface": ..., "setDefault": true|false}
+#   <- {"ok": true} / {"ok": false, "error": ...}
+#   If setDefault && iface, merge `user_pref("rozelynx.netiface.profile", ..)`
+#   into that profile's user.js (takes effect on that profile's next start),
+#   then launch `rozelynx -profile <dir> --external-link-open <url>
+#   [--external-link-iface <iface>]` detached. The D-Bus remote hands that
+#   command line to the running instance of <dir> when one exists or starts
+#   the profile fresh.
+#
+# set-prefs accepts an optional "profile" key (a profile dir, absolute or a
+# directory name under the Rozelynx profile root) to target a specific
+# profile instead of the default one.
+#
+#   -> {"action": "uget-probe"}
+#   <- {"ok": true, "integrator": "uget-integrator", "version": ..., "uget": ...}
+#   Asks uget-integrator for its version handshake without downloading
+#   anything, so the extension can tell whether a uGet hand-off is possible
+#   at all before it decides to intercept anything.
+#
+#   -> {"action": "uget", "url": <http(s) url>, "filename": ..., "referer": ...,
+#       "fileSize": ..., "userAgent": ..., "cookies": <netscape cookie file>,
+#       "clientVersion": ...}
+#   <- {"ok": true, "via": "uget-integrator", "url": ..., "uget": ...}
+#      / {"ok": false, "error": ...}
+#   Hands ONE download off to uGet, driving the very same uget-integrator
+#   stdio protocol the uGet Integration extension uses, so the queue, the
+#   GUI and the cookie handling stay uGet's own. See do_uget().
+#
+# The two verbs above are uGet's, and stay uGet's: uget-integrator's protocol
+# is a real integration with a real queue, not "run a program with a URL".
+# Everything else the extension wants to hand a download to is served by the
+# two GENERIC verbs below, which know nothing about any particular download
+# manager - that is the point of them, and uGet is just the first entry in a
+# list the user orders:
+#
+#   -> {"action": "handoff-probe", "program": "aria2c"}
+#   <- {"ok": true, "program": "aria2c", "path": "/usr/bin/aria2c"}
+#      / {"ok": false, "error": "aria2c not found on PATH"}
+#   Resolves a program name on PATH without running it, so the extension can
+#   tell the user which of their handlers can actually take a download.
+#
+#   -> {"action": "handoff", "program": "aria2c", "args": "-x 4 {url}",
+#       "url": <http(s) url>, "filename": ..., "referer": ...,
+#       "cookies": <netscape cookie file>, "userAgent": ...}
+#   <- {"ok": true, "program": "aria2c", "argv": [...], "pid": 1234}
+#      / {"ok": false, "error": ...}
+#   Runs ONE program with the args template substituted and returns
+#   immediately; it does not wait, because a download manager's window stays
+#   open for as long as the user keeps it open. See do_handoff().
+#
+#   The args template may use {url}, {filename}, {referer}, {ua} and {cookies}.
+#   {cookies} expands to the PATH of a 0600 file holding the Netscape-format
+#   cookie text in the message, written by this host and removed when the child
+#   exits - a program that wants cookies wants to open a file, and a file is the
+#   only form aria2, wget and curl all agree on.
+#
+# TRUST BOUNDARY, deliberately bounded. This host's native-messaging manifest
+# pins allowed_extensions to rozelynx-features@bytewheel.org, so no other
+# extension can reach these verbs at all, and the program name always comes
+# from a preference only the user or that extension can set. Within that, the
+# generic verb execs a program by name with a LIST argv - never a shell, never
+# a string - so nothing in a URL or a filename can become a second command.
+# A program containing a path separator is refused rather than resolved
+# relative to anything, and the resolved absolute path comes back in the
+# reply so the log line says exactly what ran.
+
+import configparser
+import glob
+import hashlib
+import json
+import os
+import re
+import select
+import shlex
+import shutil
+import sqlite3
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+BASE_DIR = os.path.dirname(os.path.realpath(__file__))
+TABLES_FILE = os.path.join(BASE_DIR, 'browsers.sh')
+LOG_FILE = '/tmp/rozelynx-open-external.log'
+ROZELYNX_ROOT = os.path.join(os.path.expanduser('~'), '.config', 'rozelynx')
+ROZELYNX_BYTE_ROOT = os.path.join(ROZELYNX_ROOT, 'bytewheel', 'rozelynx')
+PROFILE_GROUPS_DIR = os.path.join(ROZELYNX_BYTE_ROOT, 'Profile Groups')
+VERIFIED_FILE = os.path.join(ROZELYNX_ROOT, 'verified-addons.json')
+FAKE = os.environ.get('BROWSER_FAKE', '0') == '1'
+
+# uGet hand-off. uget-integrator is the binary uGet's own browser extension
+# drives over stdio; it is what turns a message into `uget-gtk <url>`.
+UGET_INTEGRATOR = 'uget-integrator'
+# The integrator answers with its handshake BEFORE it launches uget-gtk
+# (and before it .wait()s on it), so these bounds only cover the handshake,
+# never how long the user keeps the uGet window open.
+UGET_PROBE_TIMEOUT = 5.0
+UGET_HANDOFF_TIMEOUT = 10.0
+# Refuse to allocate more than this for one reply frame.
+UGET_MAX_FRAME = 16 * 1024 * 1024
+
+# Generic hand-off. Nothing here is download-manager specific; see the header
+# comment for the two verbs and the trust boundary that makes them safe.
+# Substitution placeholders an args template may use. Deliberately a closed
+# set: a template that could reach further than the download's own url, name,
+# referer and cookies has no business existing.
+HANDOFF_PLACEHOLDERS = ('url', 'filename', 'referer', 'cookies', 'ua')
+# A template longer than this is a mistake, not a command.
+HANDOFF_MAX_ARGS = 64
+HANDOFF_MAX_TEMPLATE = 4096
+# A program name is a bare name on PATH. Anything with a separator in it is
+# refused rather than resolved relative to the cwd or to $HOME, so the verb
+# cannot be turned into "run something in a directory a download chose".
+HANDOFF_PROGRAM_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]*$')
+
+
+def log(msg):
+    try:
+        with open(LOG_FILE, 'a') as f:
+            f.write('%s %s\n' % (time.strftime('%F %T'), msg))
+    except OSError:
+        pass
+
+
+def load_tables():
+    """Parse browsers.sh into (browsers, terminals) lists of dicts."""
+    browsers, terminals = [], []
+    section = None
+    with open(TABLES_FILE, 'r') as f:
+        for raw in f:
+            line = raw.rstrip('\n').strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('ROZELYNX_BROWSERS='):
+                section = 'browsers'
+                line = line.split('=', 1)[1].strip("'").strip()
+            elif line.startswith('ROZELYNX_TERMINALS='):
+                section = 'terminals'
+                line = line.split('=', 1)[1].strip("'").strip()
+            else:
+                line = line.rstrip("'").strip()
+            if not line:
+                continue
+            if section == 'browsers':
+                parts = line.split('|')
+                if len(parts) >= 4:
+                    browsers.append({
+                        'id': parts[0].strip(),
+                        'name': parts[1].strip(),
+                        'kind': parts[2].strip(),
+                        'commands': parts[3].split(),
+                    })
+            elif section == 'terminals':
+                parts = line.split('|')
+                if len(parts) >= 4:
+                    terminals.append({
+                        'id': parts[0].strip(),
+                        'name': parts[1].strip(),
+                        'pattern': parts[2].strip(),
+                        'commands': parts[3].split(),
+                    })
+    return browsers, terminals
+
+
+def first_found(commands):
+    for cmd in commands:
+        if shutil.which(cmd):
+            return cmd
+    return None
+
+
+def preferred_terminal_id(terminals):
+    term_env = os.environ.get('TERMINAL')
+    if term_env and shutil.which(term_env):
+        base = os.path.basename(term_env)
+        for t in terminals:
+            if base in t['commands'] or term_env in t['commands']:
+                return t['id']
+    for t in terminals:
+        if first_found(t['commands']):
+            return t['id']
+    return None
+
+
+def sync_desktop_entries(browsers, terminals):
+    """Removed: browser selection now happens in open-external's native
+    dialog (see browsers.sh rozelynx_show_chooser). Clean up any stale
+    user-level rozelynx handler entries from earlier designs."""
+    home = os.environ.get('HOME')
+    if not home:
+        return
+    apps_dir = os.path.join(home, '.local', 'share', 'applications')
+    try:
+        names = os.listdir(apps_dir)
+    except OSError:
+        return
+    removed = False
+    for name in names:
+        if name == 'rozelynx-default.desktop' or (
+                name.startswith('rozelynx-open-') and name.endswith('.desktop')):
+            try:
+                os.unlink(os.path.join(apps_dir, name))
+                removed = True
+            except OSError:
+                pass
+    if removed:
+        log('removed stale user handler entries')
+        upd = shutil.which('update-desktop-database')
+        if upd:
+            subprocess.run([upd, apps_dir], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+
+
+def do_list(browsers, terminals):
+    log('list request pid=%s' % os.getpid())
+    tid = preferred_terminal_id(terminals)
+    out_browsers, found_terminals = [], []
+    for b in browsers:
+        if not first_found(b['commands']):
+            continue
+        entry = {'id': b['id'], 'name': b['name'], 'kind': b['kind']}
+        if b['kind'] == 'cli':
+            entry['terminal'] = tid
+        out_browsers.append(entry)
+    for t in terminals:
+        if first_found(t['commands']):
+            found_terminals.append(t)
+    sync_desktop_entries(out_browsers, found_terminals)
+    return {
+        'browsers': out_browsers,
+        'terminals': [{'id': t['id'], 'name': t['name']} for t in found_terminals],
+    }
+
+
+def launch_detached(argv, env=None):
+    log('FAKE %s' % ' '.join(argv)) if FAKE else log(' '.join(argv))
+    if FAKE:
+        return
+    try:
+        subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                         start_new_session=True, env=env)
+    except OSError as e:
+        log('launch failed: %s' % e)
+
+
+def do_open(browsers, terminals, browser_id, url):
+    if browser_id == 'default':
+        if FAKE:
+            log('FAKE default: xdg-open %s' % url)
+            return {'ok': True}
+        xdg = shutil.which('xdg-open')
+        if not xdg:
+            return {'ok': False, 'error': 'xdg-open not found'}
+        log('default: xdg-open %s' % url)
+        launch_detached([xdg, url])
+        return {'ok': True}
+
+    entry = next((b for b in browsers if b['id'] == browser_id), None)
+    if entry is None:
+        return {'ok': False, 'error': 'unknown browser id: %s' % browser_id}
+    cmd = first_found(entry['commands'])
+    if not cmd:
+        return {'ok': False, 'error': 'browser not installed: %s' % browser_id}
+
+    if entry['kind'] == 'gui':
+        launch_detached([cmd, url])
+        return {'ok': True}
+
+    tid = preferred_terminal_id(terminals)
+    if not tid:
+        return {'ok': False, 'error': 'no terminal emulator found'}
+    t = next(x for x in terminals if x['id'] == tid)
+    term_bin = first_found(t['commands'])
+    pattern = t['pattern']
+    argv = {
+        'none': [term_bin, cmd, url],
+        '-e': [term_bin, '-e', cmd, url],
+        '--': [term_bin, '--', cmd, url],
+        'start': [term_bin, 'start', '--', cmd, url],
+        '-e-sh': [term_bin, '-e', 'sh', '-c', 'exec "$0" "$@"', cmd, url],
+    }.get(pattern)
+    if argv is None:
+        return {'ok': False, 'error': 'unknown terminal pattern: %s' % pattern}
+    launch_detached(argv)
+    return {'ok': True}
+
+
+def do_verify_record(msg):
+    sha = msg.get('sha256', '')
+    ext_id = msg.get('id', '')
+    name = msg.get('name', '')
+    if not re.match(r'^[0-9a-fA-F]{64}$', sha) or not ext_id:
+        return {'ok': False, 'error': 'invalid record'}
+    record = {'sha256': sha.lower(), 'id': ext_id, 'name': name,
+              'at': time.strftime('%F %T')}
+    try:
+        os.makedirs(os.path.dirname(VERIFIED_FILE), exist_ok=True)
+        data = {'verified': []}
+        try:
+            with open(VERIFIED_FILE, 'r') as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, ValueError):
+            pass
+        if not isinstance(data.get('verified'), list):
+            data['verified'] = []
+        data['verified'] = [r for r in data['verified']
+                            if r.get('sha256') != record['sha256']]
+        data['verified'].append(record)
+        with open(VERIFIED_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        log('verified addon recorded: %s %s' % (sha[:12], ext_id))
+        return {'ok': True}
+    except OSError as e:
+        return {'ok': False, 'error': str(e)}
+
+
+def do_list_verified(msg):
+    try:
+        with open(VERIFIED_FILE, 'r') as f:
+            data = json.load(f)
+        verified = data.get('verified', []) if isinstance(data, dict) else []
+        if not isinstance(verified, list):
+            verified = []
+        return {'verified': verified}
+    except (OSError, ValueError):
+        return {'verified': []}
+
+
+def do_profiles(msg):
+    """List RozeLynx profiles with running state and display names."""
+    profiles, default_dir = read_profiles()
+    log('profiles request pid=%s' % os.getpid())
+    return {'ok': True, 'default': default_dir, 'profiles': profiles}
+
+
+def do_netifaces(msg):
+    """List usable network interfaces (fallback for the chooser dropdown
+    when the compiled netiface service is unavailable). Mirrors the XPCOM
+    service: skip loopback and interfaces that are administratively down."""
+    ifaces = []
+    try:
+        for name in sorted(os.listdir('/sys/class/net')):
+            if name == 'lo':
+                continue
+            try:
+                with open('/sys/class/net/%s/flags' % name) as f:
+                    flags = int(f.read().strip(), 16)
+                if not (flags & 0x1):
+                    continue
+            except OSError:
+                continue
+            iftype = ''
+            try:
+                with open('/sys/class/net/%s/type' % name) as f:
+                    iftype = f.read().strip()
+            except OSError:
+                pass
+            ifaces.append({'name': name, 'displayName': name, 'type': iftype})
+    except OSError as e:
+        log('netifaces enumeration failed: %s' % e)
+        return {'ok': False, 'error': str(e)}
+    log('netifaces request pid=%s (%d)' % (os.getpid(), len(ifaces)))
+    return {'ok': True, 'interfaces': ifaces}
+
+
+def do_open_rozelynx_profile(msg):
+    """Open a URL in a specific profile (tab in its running window, or a
+    fresh instance), optionally binding the tab to an interface and/or
+    persisting that interface as the profile's default."""
+    profile = msg.get('profile', '')
+    url = msg.get('url', '')
+    iface = msg.get('iface', '')
+    set_default = bool(msg.get('setDefault'))
+    if not profile:
+        return {'ok': False, 'error': 'no profile'}
+    if not url:
+        return {'ok': False, 'error': 'no url'}
+    profile_dir = resolve_profile_dir(profile)
+    if not profile_dir:
+        return {'ok': False, 'error': 'profile dir not found: %s' % profile}
+    # An empty iface means "all interfaces" (no SO_BINDTODEVICE), which is the
+    # default a fresh profile starts with, so it must be persistable too -- the
+    # alternative is a default that can be set once and never taken back.
+    if set_default:
+        if not write_profile_pref(profile_dir, 'rozelynx.netiface.profile',
+                                  iface):
+            return {'ok': False,
+                    'error': 'could not write profile default pref'}
+    exe = shutil.which('rozelynx') or '/usr/bin/rozelynx'
+    argv = [exe, '-profile', profile_dir, '--external-link-open', url]
+    if iface:
+        argv += ['--external-link-iface', iface]
+    env = dict(os.environ)
+    env['ROZELYNX_OPEN_PICKER'] = '0'
+    launch_detached(argv, env=env)
+    return {'ok': True}
+
+
+def find_profile_extensions_dir():
+    """Locate the default RozeLynx profile's extensions/ directory via
+    profiles.ini (bytewheel branding root ~/.config/rozelynx)."""
+    ini = os.path.join(ROZELYNX_ROOT, 'bytewheel', 'rozelynx', 'profiles.ini')
+    path = None
+    try:
+        cp = configparser.ConfigParser()
+        cp.read(ini)
+        # Prefer the profile actually flagged Default=1; only fall back to
+        # section order if no profile declares it (older profiles.ini).
+        profiles = [s for s in cp.sections()
+                    if s.startswith('Profile') and
+                    cp.get(s, 'Path', fallback=None)]
+        for wanted, sections in (('1', profiles), (None, profiles)):
+            for section in sections:
+                flag = cp.get(section, 'Default', fallback=None)
+                if wanted is None or flag == wanted:
+                    path = cp.get(section, 'Path')
+                    break
+            if path:
+                break
+    except (configparser.Error, OSError):
+        path = None
+    if path is None:
+        # Fallback: newest *.default* profile directory
+        candidates = glob.glob(os.path.join(ROZELYNX_ROOT, 'bytewheel',
+                                            'rozelynx', '*.default*'))
+        if candidates:
+            path = os.path.basename(max(candidates, key=os.path.getmtime))
+    if not path:
+        return None
+    profile_dir = os.path.join(ROZELYNX_ROOT, 'bytewheel', 'rozelynx', path)
+    return os.path.join(profile_dir, 'extensions')
+
+
+def do_install_xpi(msg):
+    addon_id = msg.get('id', '')
+    src = msg.get('path', '')
+    sha = msg.get('sha256', '')
+    version = msg.get('version', '')
+    name = msg.get('name', '')
+    if not re.match(r'^[a-zA-Z0-9@._-]+$', addon_id) or '@' not in addon_id:
+        return {'ok': False, 'error': 'invalid addon id'}
+    if not src or not os.path.isfile(src):
+        return {'ok': False, 'error': 'xpi path not found: %s' % src}
+    if not re.match(r'^[0-9a-fA-F]{64}$', sha):
+        return {'ok': False, 'error': 'invalid sha256'}
+    ext_dir = find_profile_extensions_dir()
+    if not ext_dir:
+        return {'ok': False, 'error': 'profile extensions dir not found'}
+    try:
+        os.makedirs(ext_dir, exist_ok=True)
+        # Verify the sha256 of the staged file before copying it in.
+        h = hashlib.sha256()
+        with open(src, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        if h.hexdigest().lower() != sha.lower():
+            return {'ok': False, 'error': 'sha256 mismatch on staged xpi'}
+        dest = os.path.join(ext_dir, addon_id + '.xpi')
+        shutil.copy2(src, dest)
+        os.chmod(dest, 0o644)
+        rec = do_verify_record({'sha256': sha, 'id': addon_id, 'name': name})
+        if not rec.get('ok'):
+            log('install-xpi: verify-record failed: %s' % rec.get('error'))
+        log('install-xpi: %s v%s -> %s' % (addon_id, version, dest))
+        return {'ok': True, 'dest': dest}
+    except OSError as e:
+        return {'ok': False, 'error': str(e)}
+
+
+def do_install_langpack(msg):
+    """Verify a downloaded language-pack XPI (sha256) and install it into
+    the profile extensions directory. Activated on the next browser
+    restart. The staged path may be relative to ~/Downloads (the
+    downloads API reports paths relative to the Downloads dir)."""
+    addon_id = msg.get('id', '')
+    src = msg.get('path', '')
+    sha = msg.get('sha256', '')
+    version = msg.get('version', '')
+    if not re.match(r'^[a-zA-Z0-9@._-]+$', addon_id) or '@' not in addon_id:
+        return {'ok': False, 'error': 'invalid addon id'}
+    if not src:
+        return {'ok': False, 'error': 'missing xpi path'}
+    if not os.path.isabs(src):
+        src = os.path.expanduser(os.path.join('~', 'Downloads', src))
+    if not os.path.isfile(src):
+        return {'ok': False, 'error': 'xpi path not found: %s' % src}
+    if not re.match(r'^[0-9a-fA-F]{64}$', sha):
+        return {'ok': False, 'error': 'invalid sha256'}
+    ext_dir = find_profile_extensions_dir()
+    if not ext_dir:
+        return {'ok': False, 'error': 'profile extensions dir not found'}
+    try:
+        os.makedirs(ext_dir, exist_ok=True)
+        h = hashlib.sha256()
+        with open(src, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        if h.hexdigest().lower() != sha.lower():
+            return {'ok': False, 'error': 'sha256 mismatch on langpack xpi'}
+        dest = os.path.join(ext_dir, addon_id + '.xpi')
+        if os.path.isfile(dest):
+            h2 = hashlib.sha256()
+            with open(dest, 'rb') as f:
+                for chunk in iter(lambda: f.read(65536), b''):
+                    h2.update(chunk)
+            if h2.hexdigest().lower() == sha.lower():
+                log('install-langpack: %s v%s already installed (same sha), '
+                    'skipping copy' % (addon_id, version))
+                return {'ok': True, 'dest': dest, 'skipped': True}
+        shutil.copy2(src, dest)
+        os.chmod(dest, 0o644)
+        log('install-langpack: %s v%s -> %s' % (addon_id, version, dest))
+        return {'ok': True, 'dest': dest}
+    except OSError as e:
+        return {'ok': False, 'error': str(e)}
+
+
+def do_uninstall_langpack(msg):
+    """Remove a language-pack XPI from the profile extensions directory.
+    The addon manager reconciles the database on the next browser start."""
+    addon_id = msg.get('id', '')
+    if not re.match(r'^[a-zA-Z0-9@._-]+$', addon_id) or '@' not in addon_id:
+        return {'ok': False, 'error': 'invalid addon id'}
+    ext_dir = find_profile_extensions_dir()
+    if not ext_dir:
+        return {'ok': False, 'error': 'profile extensions dir not found'}
+    dest = os.path.join(ext_dir, addon_id + '.xpi')
+    try:
+        if os.path.isfile(dest):
+            os.remove(dest)
+            log('uninstall-langpack: removed %s' % dest)
+            return {'ok': True, 'removed': True}
+        return {'ok': True, 'removed': False}
+    except OSError as e:
+        return {'ok': False, 'error': str(e)}
+
+
+def resolve_profile_dir(profile):
+    """Resolve a profile reference to an absolute directory. If profile is
+    given (absolute, or a directory name under the RozeLynx profile root),
+    use it; otherwise fall back to the default profile."""
+    if profile:
+        cand = profile if os.path.isabs(profile) else \
+            os.path.join(ROZELYNX_BYTE_ROOT, profile)
+        if os.path.isdir(cand):
+            return cand
+        return None
+    ext_dir = find_profile_extensions_dir()
+    return os.path.dirname(ext_dir) if ext_dir else None
+
+
+def profile_dir_running(profile_dir):
+    """True when the profile's lock symlink points at a live process."""
+    try:
+        lock = os.path.join(profile_dir, 'lock')
+        if not os.path.islink(lock):
+            return False
+        pid = os.readlink(lock).rpartition(':')[2].lstrip('+')
+        if not pid or not pid.isdigit():
+            return False
+        return os.path.isdir(os.path.join('/proc', pid))
+    except OSError:
+        return False
+
+
+def profile_store_names():
+    """Map profile directory paths -> display names from the Profile
+    Groups store (the names the Profile Manager shows). Profiles created
+    via about:profiles exist only here, not in profiles.ini, so this is the
+    authoritative name source."""
+    names = {}
+    try:
+        cp = configparser.ConfigParser()
+        cp.read(os.path.join(ROZELYNX_BYTE_ROOT, 'profiles.ini'))
+        for section in cp.sections():
+            store = cp.get(section, 'StoreID', fallback='').strip()
+            if not store:
+                continue
+            db = os.path.join(PROFILE_GROUPS_DIR, store + '.sqlite')
+            if not os.path.isfile(db):
+                continue
+            try:
+                conn = sqlite3.connect(db)
+                try:
+                    cur = conn.execute('PRAGMA table_info(Profiles)')
+                    cols = [r[1] for r in cur.fetchall()]
+                    cur = conn.execute('SELECT * FROM Profiles')
+                    for row in cur.fetchall():
+                        rec = dict(zip(cols, row))
+                        p = rec.get('path')
+                        n = rec.get('name')
+                        if not p or not n:
+                            continue
+                        names[p] = n
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                pass
+    except (configparser.Error, OSError):
+        pass
+    return names
+
+
+def read_profiles():
+    """List RozeLynx profiles: {name, path, dir, running, default}[] plus
+    the default profile directory. The default comes from profiles.ini
+    [Install*] Default=; names come from the store; running from locks."""
+    ini = os.path.join(ROZELYNX_BYTE_ROOT, 'profiles.ini')
+    default_dir = ''
+    profiles = []
+    try:
+        cp = configparser.ConfigParser()
+        cp.read(ini)
+        for section in cp.sections():
+            if section.startswith('Install') and cp.has_option(section, 'Default'):
+                default_dir = cp.get(section, 'Default').strip()
+        for section in cp.sections():
+            if not section.startswith('Profile'):
+                continue
+            path = cp.get(section, 'Path', fallback='').strip()
+            if path:
+                profile_dir = path if os.path.isabs(path) else \
+                    os.path.join(ROZELYNX_BYTE_ROOT, path)
+                profiles.append((path, profile_dir))
+    except (configparser.Error, OSError):
+        pass
+
+    store_names = profile_store_names()
+
+    # Profiles in the store may not be listed in profiles.ini (created via
+    # about:profiles); include those too.
+    known_paths = set(p[0] for p in profiles)
+    for dirname in os.listdir(ROZELYNX_BYTE_ROOT):
+        if dirname in known_paths or dirname == 'Profile Groups':
+            continue
+        cand = os.path.join(ROZELYNX_BYTE_ROOT, dirname)
+        if os.path.isdir(cand) and \
+                (os.path.isfile(os.path.join(cand, 'prefs.js')) or
+                 os.path.islink(os.path.join(cand, 'lock'))):
+            profiles.append((dirname, cand))
+            known_paths.add(dirname)
+
+    out = []
+    for path, profile_dir in profiles:
+        out.append({
+            'name': store_names.get(path, path),
+            'path': path,
+            'dir': profile_dir,
+            'running': profile_dir_running(profile_dir),
+            'default': path == default_dir,
+        })
+    out.sort(key=lambda p: (not p['default'], not p['running'], p['path']))
+    return out, default_dir
+
+
+def write_profile_pref(profile_dir, key, value):
+    """Merge `user_pref(key, value)` into a profile's user.js, preserving
+    every other line (the ip-protection toggle owns user.js too). Returns
+    True on success."""
+    key_json = json.dumps(key)
+    value_json = json.dumps(value)
+    lines = []
+    target = os.path.join(profile_dir, 'user.js')
+    try:
+        if os.path.isfile(target):
+            with open(target, 'r') as f:
+                lines = f.read().splitlines()
+    except OSError:
+        pass
+    lines = [l for l in lines
+             if not (l.startswith('user_pref(') and key_json in l)]
+    lines.append('user_pref(%s, %s);' % (key_json, value_json))
+    try:
+        tmp = target + '.tmp'
+        with open(tmp, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        os.replace(tmp, target)
+        os.chmod(target, 0o644)
+        return True
+    except OSError:
+        return False
+
+
+def do_set_prefs(msg):
+    """Write the ip-protection pref set into a profile's user.js. The
+    browser imports user.js into prefs.js at every start, so the toggle is
+    the sole authority for these prefs (about:config edits to them are
+    reset on restart, mirroring how librewolf.cfg pins its own prefs).
+    Takes effect on the next browser start. Prefs are merged, preserving
+    unrelated user.js lines. An optional "profile" key targets a specific
+    profile directory instead of the default profile."""
+    prefs = msg.get('prefs', {})
+    if not isinstance(prefs, dict) or not prefs:
+        return {'ok': False, 'error': 'no prefs given'}
+    cleaned = {}
+    for key, value in prefs.items():
+        if not isinstance(key, str) or not re.match(r'^[A-Za-z0-9._-]+$', key):
+            return {'ok': False, 'error': 'invalid pref name: %r' % (key,)}
+        if isinstance(value, bool):
+            pass
+        elif isinstance(value, int) and not isinstance(value, bool) \
+                and -2**31 <= value < 2**31:
+            pass
+        elif isinstance(value, str) and len(value) < 8192:
+            pass
+        else:
+            return {'ok': False, 'error': 'invalid pref value for %s' % key}
+        cleaned[key] = value
+    profile_dir = resolve_profile_dir(msg.get('profile'))
+    if not profile_dir:
+        return {'ok': False, 'error': 'profile dir not found'}
+    ok = True
+    for key in sorted(cleaned):
+        if not write_profile_pref(profile_dir, key, cleaned[key]):
+            ok = False
+    if not ok:
+        return {'ok': False, 'error': 'failed to write user.js'}
+    log('set-prefs: merged %d prefs -> %s' % (len(cleaned), profile_dir))
+    return {'ok': True, 'written': len(cleaned),
+            'dest': os.path.join(profile_dir, 'user.js')}
+
+
+LEPTON_IMPORTS = (
+    '@import url("leptonChrome.css");\n'
+    '@import url("rozelynxLepton.css");\n'
+)
+
+LEPTON_CONTENT_IMPORTS = (
+    '@import url("leptonContent.css");\n'
+)
+
+# privateNewtabChrome.css joins SKIN_FILES because it is a SHEET, not artwork.
+# It lives in browser/defaults/rozelynx, which is not a registered skin, so a
+# chrome://browser/skin/privateNewtabChrome.css URL cannot resolve -- an earlier
+# revision imported it that way and the rule silently never applied. Being in
+# SKIN_FILES makes it symlink into each profile's chrome dir and import by bare
+# filename, exactly like ssbChrome.css. Only the ARTWORK it points at
+# (privateNewtabFavicon.svg) is a packaged skin file referenced by chrome://.
+SKIN_FILES = ('leptonChrome.css', 'rozelynxLepton.css', 'ssbChrome.css',
+              'privateNewtabChrome.css')
+CONTENT_SKIN_FILES = ('leptonContent.css',)
+# Private-NEWTAB favicon rule. Separate from the lepton toggle on purpose: the
+# claw mark is wanted on about:newtab in a private window whether or not the
+# skin is on, so it is always imported. The rule itself scopes to
+# :root[privatebrowsingmode] plus the tab carrying the branding icon, so
+# bookmarks and icon-less sites are unaffected.
+CHROME_ALWAYS_IMPORTS = ('@import url("privateNewtabChrome.css");\n',)
+
+
+def find_all_profile_dirs():
+    """Every profile directory in profiles.ini (plus *.default* fallbacks).
+
+    A PWA window can be opened from any profile, and each one needs its own
+    chrome/userChrome.css, so chrome-skin seeds all of them rather than
+    whichever happens to be flagged default."""
+    root = os.path.join(ROZELYNX_ROOT, 'bytewheel', 'rozelynx')
+    found = []
+    ini = os.path.join(root, 'profiles.ini')
+    try:
+        cp = configparser.ConfigParser()
+        cp.read(ini)
+        for section in cp.sections():
+            # Profile0/Profile1/... only: "ProfileGroups" is a container
+            # directory for group profiles, not a profile itself.
+            if not (section.startswith('Profile') and section[7:].isdigit()):
+                continue
+            path = cp.get(section, 'Path', fallback=None)
+            if not path:
+                continue
+            cand = path if os.path.isabs(path) else os.path.join(root, path)
+            if os.path.isdir(cand) and cand not in found:
+                found.append(cand)
+    except (configparser.Error, OSError):
+        pass
+    for cand in sorted(glob.glob(os.path.join(root, '*'))):
+        if not os.path.isdir(cand) or cand in found:
+            continue
+        # Only pick up profiles missing from profiles.ini: either a
+        # *.default* dir or one with Firefox's own prefs.js in it. This
+        # keeps 'Profile Groups' and other container dirs out.
+        name = os.path.basename(cand)
+        if '.default' in name or os.path.isfile(os.path.join(cand,
+                                                             'prefs.js')):
+            found.append(cand)
+    return found
+
+
+def do_chrome_skin(msg):
+    """Enable/disable the Lepton skin by rewriting the profile's
+    userChrome.css (browser chrome) and userContent.css (about: pages via
+    leptonContent.css). Takes effect on the next browser restart.
+
+    Firefox only resolves RELATIVE @imports (or chrome:// URLs) from
+    userChrome.css/userContent.css; absolute file:// imports are silently
+    dropped, so the installed skin sheets are symlinked into the profile's
+    chrome/ dir and imported by bare filename."""
+    enabled = bool(msg.get('enabled', True))
+    # Seed EVERY profile, not just the default one: a PWA window opened from
+    # a non-default profile had no userChrome.css at all, so the SSB chrome
+    # rules never applied there (windows behaved fine, just undecorated).
+    # An explicit 'profile' still restricts the write to that one profile.
+    explicit = msg.get('profile')
+    if explicit:
+        profile_dir = resolve_profile_dir(explicit)
+        targets = [profile_dir] if profile_dir else []
+    else:
+        targets = find_all_profile_dirs()
+    if not targets:
+        return {'ok': False, 'error': 'no profile directories found'}
+    skin_dir = os.path.join(BASE_DIR, 'browser', 'defaults', 'rozelynx')
+    seeded, errors = [], []
+    for profile_dir in targets:
+        chrome_dir = os.path.join(profile_dir, 'chrome')
+        try:
+            os.makedirs(chrome_dir, exist_ok=True)
+            # Link the skin sheets into the profile chrome dir. Symlinks keep
+            # them in sync with the installed copies across package upgrades.
+            for name in SKIN_FILES + CONTENT_SKIN_FILES:
+                src = os.path.join(skin_dir, name)
+                if not os.path.exists(src):
+                    continue
+                dst = os.path.join(chrome_dir, name)
+                try:
+                    if os.path.islink(dst) or os.path.exists(dst):
+                        os.remove(dst)
+                except OSError:
+                    pass
+                os.symlink(src, dst)
+            target = os.path.join(chrome_dir, 'userChrome.css')
+            header = (
+                '/* RozeLynx userChrome.css - managed by the RozeLynx Features\n'
+                ' * extension options page (lepton-skin toggle). Restart the\n'
+                ' * browser after changing it. */\n'
+            )
+            if enabled:
+                body = LEPTON_IMPORTS
+            else:
+                body = '/* Lepton skin disabled from the RozeLynx options page. */\n'
+            # The SSB window rules and the private-tab favicon are feature
+            # rules, not skin styling, so they survive a disabled skin.
+            with open(target, 'w') as f:
+                f.write(header + body + '@import url("ssbChrome.css");\n'
+                        + ''.join(CHROME_ALWAYS_IMPORTS))
+            log('chrome-skin: enabled=%s -> %s' % (enabled, target))
+
+            # userContent.css: about:-page styling (leptonContent.css).
+            content_target = os.path.join(chrome_dir, 'userContent.css')
+            content_header = (
+                '/* RozeLynx userContent.css - managed by the RozeLynx Features\n'
+                ' * extension options page (lepton-skin toggle). Restart the\n'
+                ' * browser after changing it. */\n'
+            )
+            if enabled:
+                content_body = LEPTON_CONTENT_IMPORTS
+            else:
+                content_body = (
+                    '/* Lepton skin disabled from the RozeLynx options page. */\n'
+                )
+            with open(content_target, 'w') as f:
+                f.write(content_header + content_body)
+            log('chrome-skin: userContent.css enabled=%s -> %s' %
+                (enabled, content_target))
+            seeded.append(profile_dir)
+        except OSError as e:
+            errors.append('%s: %s' % (profile_dir, e))
+    if not seeded:
+        return {'ok': False, 'error': '; '.join(errors) or 'no profile seeded'}
+    log('chrome-skin: seeded %d/%d profiles' % (len(seeded), len(targets)))
+    return {'ok': True, 'seeded': seeded, 'errors': errors}
+
+
+def _reap_detached(proc, unlink=None):
+    """Detach from a child that has answered but not exited.
+
+    uget-integrator replies, then runs `uget-gtk` and *waits* for it. With no
+    uGet instance running that is the whole lifetime of its GUI, so this host
+    must not block on it - the extension is waiting on sendNativeMessage. The
+    same is true of every program a cmd: hand-off runs.
+
+    `unlink` is a file to remove once the child is gone: the cookie file a
+    {cookies} template expanded to.
+
+    It is NOT the primary mechanism, and cannot be. This host answers one
+    native-messaging request and then exits, so a daemon thread waiting on the
+    child is simply gone before the child finishes - the wait is a courtesy for
+    the case where the host happens to outlive it, nothing more. That is why
+    the cookie file is written into the session's RUNTIME directory (see
+    _cookie_dir), which the user's session clears on logout, and why the sweep
+    below exists at all. Getting this wrong would leave live session cookies on
+    a persistent disk indefinitely, so the reasoning is recorded here rather
+    than left to be rediscovered."""
+    def waiter():
+        try:
+            proc.wait()
+        except OSError:
+            pass
+        _unlink_quietly(unlink)
+    threading.Thread(target=waiter, daemon=True).start()
+
+
+def _unlink_quietly(path):
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _cookie_dir():
+    """Where a file of live session cookies is written.
+
+    $XDG_RUNTIME_DIR first: it is a tmpfs, per-user, mode 0700, and the user's
+    session empties it on logout. That is the only place a file of live
+    cookies belongs - a persistent cache directory would keep them on disk
+    after logout, which is the whole reason not to put them there. The /tmp
+    fallback is namespaced by uid so another account cannot read it even if
+    $XDG_RUNTIME_DIR is unset (a bare /tmp/<name> would be readable, and
+    /tmp/<name> is exactly what a symlink attack would aim at)."""
+    base = os.environ.get('XDG_RUNTIME_DIR')
+    if base:
+        return os.path.join(base, 'rozelynx', 'handoff')
+    return os.path.join('/tmp', 'rozelynx-%d' % os.getuid(), 'handoff')
+
+
+def _sweep_cookie_files(max_age=3600):
+    """Remove cookie files older than max_age seconds.
+
+    The session runtime directory is emptied on logout, so this is only about
+    a long-lived session that has done many hand-offs; an hour is long enough
+    that no download manager is still reading one."""
+    d = _cookie_dir()
+    now = time.time()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for name in names:
+        p = os.path.join(d, name)
+        try:
+            if now - os.path.getmtime(p) > max_age:
+                os.unlink(p)
+        except OSError:
+            pass
+
+
+def _write_cookie_file(text):
+    """Write Netscape cookie text to a private file and return its path.
+
+    Mode 0600 in a 0700 directory: these are the user's live session cookies.
+    An empty body writes nothing and answers '' - {cookies} then expands to
+    nothing, and _substitute drops the token that held it."""
+    if not text:
+        return ''
+    d = _cookie_dir()
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    except OSError as e:
+        log('cannot create the cookie directory: %s' % e)
+        return ''
+    path = os.path.join(d, 'cookies-%d-%d.txt' % (os.getpid(),
+                                                   time.time_ns() % 1000000))
+    # O_EXCL and no symlink following: the name is ours, but a predictable name
+    # in a world-writable parent is still a name worth refusing to reuse.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as e:
+        log('cannot write the cookie file: %s' % e)
+        return ''
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text if text.endswith('\n') else text + '\n')
+    except OSError as e:
+        log('cannot write the cookie file: %s' % e)
+        _unlink_quietly(path)
+        return ''
+    return path
+
+
+def _frame(obj):
+    """Length-prefix a JSON message the way Firefox and uget-integrator do."""
+    data = json.dumps(obj).encode('utf-8')
+    return struct.pack('@I', len(data)) + data
+
+
+def _read_frame(stream):
+    """Read one length-prefixed JSON reply, or None if it is not one."""
+    raw = b''
+    while len(raw) < 4:
+        chunk = stream.read(4 - len(raw))
+        if not chunk:
+            return None
+        raw += chunk
+    (length,) = struct.unpack('@I', raw)
+    if length > UGET_MAX_FRAME:
+        return None
+    body = b''
+    while len(body) < length:
+        chunk = stream.read(length - len(body))
+        if not chunk:
+            break
+        body += chunk
+    if len(body) < length:
+        return None
+    try:
+        return json.loads(body.decode('utf-8', 'replace'))
+    except ValueError:
+        return None
+
+
+def _run_integrator(message, timeout):
+    """Send one message to uget-integrator and return its reply.
+
+    Nothing is downloaded here beyond what `message` asks for: the integrator
+    is spawned per call, given exactly one framed message on stdin and then
+    read once. Returns {'ok': False, 'error': ...} rather than raising, so
+    the caller can hand the reason straight back to the extension."""
+    if FAKE:
+        log('FAKE uget %s' % json.dumps(message))
+        return {'ok': True, 'reply': {'Status': 'Available', 'Version': 'fake',
+                                      'Uget': 'fake'}}
+    binary = shutil.which(UGET_INTEGRATOR)
+    if not binary:
+        return {'ok': False,
+                'error': '%s not found on PATH' % UGET_INTEGRATOR}
+    try:
+        proc = subprocess.Popen([binary], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+    except OSError as e:
+        return {'ok': False, 'error': 'spawn %s: %s' % (UGET_INTEGRATOR, e)}
+    try:
+        proc.stdin.write(_frame(message))
+        proc.stdin.flush()
+    except OSError as e:
+        _reap_detached(proc)
+        return {'ok': False, 'error': 'write to %s: %s' % (UGET_INTEGRATOR, e)}
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+    # Nothing has been read from the pipe yet, so select() on the fd and a
+    # buffered read cannot disagree: a ready fd always has bytes to read.
+    try:
+        ready, _, _ = select.select([proc.stdout], [], [], timeout)
+    except (OSError, ValueError) as e:
+        _reap_detached(proc)
+        return {'ok': False, 'error': 'read from %s: %s' % (UGET_INTEGRATOR, e)}
+    if not ready:
+        _reap_detached(proc)
+        return {'ok': False,
+                'error': '%s did not answer within %.0fs' % (UGET_INTEGRATOR,
+                                                            timeout)}
+    reply = _read_frame(proc.stdout)
+    _reap_detached(proc)
+    if reply is None:
+        return {'ok': False,
+                'error': 'unreadable reply from %s' % UGET_INTEGRATOR}
+    return {'ok': True, 'reply': reply}
+
+
+def do_uget_probe(msg):
+    """Report whether a uGet hand-off is possible (extension-side detection).
+
+    The probe is uget-integrator's own version handshake: a message with no
+    "URL" key in it makes the integrator answer {"Status", "Version",
+    "Uget"} and download nothing. This is the same handshake uGet's browser
+    extension uses to decide whether it may interrupt downloads at all, so
+    "uGet can take this download" and "uGet Integration is not disabled" are
+    answered by the same component that will do the work."""
+    res = _run_integrator({'probe': True}, UGET_PROBE_TIMEOUT)
+    if not res.get('ok'):
+        return {'ok': False, 'error': res.get('error'),
+                'integrator': UGET_INTEGRATOR}
+    reply = res['reply'] or {}
+    return {'ok': True, 'integrator': UGET_INTEGRATOR,
+            'version': reply.get('Version', ''), 'uget': reply.get('Uget', '')}
+
+
+def do_uget(msg):
+    """Hand one download off to uGet.
+
+    The message is the one uGet Integration's extension sends, including its
+    capitalised key names, because uget-integrator indexes them literally
+    (`data['URL']`, `data['FileName']`, ...) and a missing key is a KeyError
+    rather than a default - so every one of them has to be present even when
+    empty. 'Cookies' is a Netscape cookie file for uget-gtk's
+    --http-cookie-file, formatted by the extension; see collectCookies() in
+    modules/downloads-uget/background.js for the field order."""
+    url = msg.get('url', '')
+    if not url:
+        return {'ok': False, 'error': 'no url'}
+    if not re.match(r'^https?://', url, re.I):
+        return {'ok': False, 'error': 'not an http(s) url: %s' % url}
+    payload = {
+        'URL': url,
+        'Cookies': msg.get('cookies', ''),
+        'UserAgent': msg.get('userAgent', ''),
+        'FileName': msg.get('filename', ''),
+        'FileSize': str(msg.get('fileSize', '')),
+        'Referer': msg.get('referer', ''),
+        'PostData': msg.get('postData', ''),
+        'Batch': False,
+        # uget-integrator never reads this one back; uGet's extension puts
+        # its own version here, so this puts ours.
+        'Version': msg.get('clientVersion', ''),
+    }
+    log('uget handoff: %s' % url)
+    res = _run_integrator(payload, UGET_HANDOFF_TIMEOUT)
+    if not res.get('ok'):
+        return res
+    reply = res['reply'] or {}
+    if reply.get('Status') != 'Available':
+        return {'ok': False,
+                'error': '%s refused the download: %s'
+                         % (UGET_INTEGRATOR, json.dumps(reply))}
+    return {'ok': True, 'via': UGET_INTEGRATOR, 'url': url,
+            'uget': reply.get('Uget', '')}
+
+
+def _resolve_program(name):
+    """Resolve a bare program name on PATH, or explain why it cannot be.
+
+    Returns (path, None) or (None, error). The name is validated BEFORE the
+    lookup so a path, a glob or an empty string is refused by the same rule
+    rather than by whatever shutil.which happens to do with it."""
+    if not name or not isinstance(name, str):
+        return None, 'no program given'
+    if len(name) > 255:
+        return None, 'program name is too long'
+    if not HANDOFF_PROGRAM_RE.match(name):
+        return None, ('%r is not a bare program name; put the program on '
+                      'PATH and name it without a path' % name)
+    path = shutil.which(name)
+    if not path:
+        return None, '%s not found on PATH' % name
+    return path, None
+
+
+def do_handoff_probe(msg):
+    """Report whether a configured hand-off program exists, without running it.
+
+    This is the generic counterpart of do_uget_probe(): the extension needs to
+    know which of the user's handlers can actually take a download before it
+    offers to intercept one, and resolving a name on PATH is all it takes to
+    answer that. It deliberately runs nothing - a probe that executed the
+    program would be a surprise, and a download manager may well open a window
+    on start-up."""
+    name = msg.get('program', '')
+    path, err = _resolve_program(name)
+    if err:
+        return {'ok': False, 'error': err, 'program': name}
+    return {'ok': True, 'program': name, 'path': path}
+
+
+def _substitute(template, values):
+    """Expand {url} / {filename} / {referer} / {cookies} / {ua} in an args
+    template, then return it as an argv LIST.
+
+    ORDER MATTERS, and getting it wrong is a real bug rather than a style
+    question. The template is tokenised FIRST and each token is substituted
+    afterwards, so a value is always exactly one argv entry however much it
+    contains. Substituting into the raw string and splitting afterwards lets a
+    url with a space in it - or one carrying `;rm -rf /` - become several
+    arguments to the download manager, which is the whole class of thing the
+    list-argv design exists to prevent.
+
+    A closed placeholder set: an unknown one is an error rather than a
+    literal, because a template that silently does not expand is a handler
+    that silently downloads nothing. A token that expands to nothing is
+    DROPPED rather than passed as an empty argument, so `-o {filename} {url}`
+    does what it looks like when there is no filename to suggest."""
+    if not isinstance(template, str):
+        return None, 'args template is not a string'
+    if len(template) > HANDOFF_MAX_TEMPLATE:
+        return None, 'args template is longer than %d characters' % \
+            HANDOFF_MAX_TEMPLATE
+    for name in re.findall(r'\{([^{}]*)\}', template):
+        if name not in HANDOFF_PLACEHOLDERS:
+            return None, ('unknown placeholder {%s}; use one of %s'
+                          % (name,
+                             ', '.join('{%s}' % p for p in HANDOFF_PLACEHOLDERS)))
+    try:
+        tokens = shlex.split(template)
+    except ValueError as e:
+        return None, 'args template does not parse: %s' % e
+    if not tokens:
+        return None, 'args template is empty'
+    def expand(match):
+        return str(values.get(match.group(1), '') or '')
+    argv = []
+    for token in tokens:
+        value = re.sub(r'\{([^{}]*)\}', expand, token)
+        if value:
+            argv.append(value)
+    if not argv:
+        return None, 'args template expands to nothing'
+    if len(argv) > HANDOFF_MAX_ARGS:
+        return None, 'args template expands to more than %d arguments' % \
+            HANDOFF_MAX_ARGS
+    return argv, None
+
+
+def do_handoff(msg):
+    """Hand one download off to a configured program, whatever that program is.
+
+    This is the generic counterpart of do_uget(). It runs the user's program
+    with the substituted args and returns as soon as the child exists - it
+    must not wait, because every download manager this is meant for keeps its
+    window (or its process) alive for as long as the user wants it, and the
+    extension is blocked on sendNativeMessage for the whole of that.
+
+    The child is detached (start_new_session, stdio to /dev/null) for the same
+    reason the integrator's is: it is not ours to reap, and a download manager
+    that outlives the browser must not die with it.
+
+    `cookies` arrives as Netscape-format TEXT and {cookies} expands to the PATH
+    of a file holding it. Writing that file here rather than in the extension is
+    deliberate: an extension page has no filesystem API, this process already
+    writes files, and how long a file of live cookies lies around on disk is
+    this process's business and nobody else's. The file is removed when the
+    child exits, and anything left by a crash is swept on the next hand-off.
+    """
+    name = msg.get('program', '')
+    url = msg.get('url', '')
+    if not url:
+        return {'ok': False, 'error': 'no url'}
+    if not re.match(r'^https?://', url, re.I):
+        return {'ok': False, 'error': 'not an http(s) url: %s' % url}
+    path, err = _resolve_program(name)
+    if err:
+        return {'ok': False, 'error': err, 'program': name}
+    _sweep_cookie_files()
+    cookie_path = _write_cookie_file(msg.get('cookies', ''))
+    argv, err = _substitute(msg.get('args', '{url}'), {
+        'url': url,
+        'filename': msg.get('filename', ''),
+        'referer': msg.get('referer', ''),
+        'cookies': cookie_path or '',
+        'ua': msg.get('userAgent', ''),
+    })
+    if err:
+        _unlink_quietly(cookie_path)
+        return {'ok': False, 'error': err, 'program': name}
+    full = [path] + argv
+    if FAKE:
+        log('FAKE handoff %s' % ' '.join(full))
+        return {'ok': True, 'program': name, 'path': path, 'argv': full,
+                'pid': 0, 'fake': True,
+                'cookieFile': cookie_path or ''}
+    log('handoff to %s: %s' % (name, ' '.join(full)))
+    try:
+        proc = subprocess.Popen(full, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL,
+                                start_new_session=True)
+    except OSError as e:
+        _unlink_quietly(cookie_path)
+        return {'ok': False, 'error': 'spawn %s: %s' % (name, e),
+                'program': name}
+    _reap_detached(proc, cookie_path)
+    return {'ok': True, 'program': name, 'path': path, 'argv': full,
+            'pid': proc.pid, 'cookieFile': cookie_path or ''}
+
+
+def read_message():
+    raw = sys.stdin.buffer.read(4)
+    if len(raw) < 4:
+        return None
+    (length,) = struct.unpack('@I', raw)  # native byte order, like Firefox
+    data = sys.stdin.buffer.read(length)
+    if len(data) < length:
+        return None
+    return json.loads(data.decode('utf-8', 'replace'))
+
+
+def send_message(obj):
+    data = json.dumps(obj).encode('utf-8')
+    sys.stdout.buffer.write(struct.pack('@I', len(data)))
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+
+
+def main():
+    try:
+        browsers, terminals = load_tables()
+    except OSError as e:
+        browsers, terminals = [], []
+        log('cannot load tables: %s' % e)
+
+    while True:
+        msg = read_message()
+        if msg is None:
+            break
+        action = msg.get('action')
+        if action == 'list':
+            send_message(do_list(browsers, terminals))
+        elif action == 'open':
+            result = do_open(browsers, terminals,
+                             msg.get('id', ''), msg.get('url', ''))
+            send_message(result)
+        elif action == 'verify-record':
+            send_message(do_verify_record(msg))
+        elif action == 'list-verified':
+            send_message(do_list_verified(msg))
+        elif action == 'install-xpi':
+            send_message(do_install_xpi(msg))
+        elif action == 'install-langpack':
+            send_message(do_install_langpack(msg))
+        elif action == 'uninstall-langpack':
+            send_message(do_uninstall_langpack(msg))
+        elif action == 'set-prefs':
+            send_message(do_set_prefs(msg))
+        elif action == 'profiles':
+            send_message(do_profiles(msg))
+        elif action == 'netifaces':
+            send_message(do_netifaces(msg))
+        elif action == 'open-rozelynx-profile':
+            send_message(do_open_rozelynx_profile(msg))
+        elif action == 'chrome-skin':
+            send_message(do_chrome_skin(msg))
+        elif action == 'uget-probe':
+            send_message(do_uget_probe(msg))
+        elif action == 'uget':
+            send_message(do_uget(msg))
+        elif action == 'handoff-probe':
+            send_message(do_handoff_probe(msg))
+        elif action == 'handoff':
+            send_message(do_handoff(msg))
+        else:
+            send_message({'ok': False, 'error': 'unknown action'})
+
+
+if __name__ == '__main__':
+    main()

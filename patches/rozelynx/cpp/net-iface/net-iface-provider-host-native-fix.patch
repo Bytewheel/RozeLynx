@@ -1,0 +1,141 @@
+--- a/netwerk/protocol/http/HTTPSRecordResolver.cpp
++++ b/netwerk/protocol/http/HTTPSRecordResolver.cpp
+@@ -15,6 +15,7 @@
+ #include "nsIDNSByTypeRecord.h"
+ #include "nsIDNSService.h"
+ #include "nsNetCID.h"
++#include "nsNetUtil.h"  // RozeLynx netiface: NS_NewURI (provider-host guard)
+ #include "nsServiceManagerUtils.h"
+ 
+ #include "DNSAdditionalInfo.h"  // RozeLynx netiface
+@@ -95,6 +96,42 @@
+     if (rozelynxResolverURL.IsEmpty() && TRRService::Get()) {
+       TRRService::Get()->GetURI(rozelynxResolverURL);
+     }
++    // RozeLynx netiface: never carry a resolver URL on the DoH provider's
++    // OWN host lookups (both the per-interface URI and the global
++    // fallback). Upstream NameLookup routes mTrrServer records through
++    // the custom-server branch, where the provider-host native decision
++    // (TRR_DISABLED_MODE) dies instantly with NS_ERROR_UNKNOWN_HOST, and a
++    // provider-host record keyed to its own resolver URL would recurse
++    // into the very DoH connection it bootstraps. An empty resolver URL
++    // keeps the record on the native path (bootstrap via the default
++    // route; getaddrinfo cannot bind - accepted tradeoff, same as
++    // DoH-off). Applies to the HTTPS RR probe and the CNAME probe alike.
++    if (!rozelynxResolverURL.IsEmpty()) {
++      bool rozelynxIsProviderHost =
++          (TRRService::Get() &&
++           TRRService::Get()->IsProviderHost(mConnInfo->GetOrigin()));
++      if (!rozelynxIsProviderHost) {
++        nsCOMPtr<nsIURI> rozelynxResolverURI;
++        nsAutoCString rozelynxResolverHost;
++        if (NS_SUCCEEDED(NS_NewURI(getter_AddRefs(rozelynxResolverURI),
++                                   rozelynxResolverURL)) &&
++            NS_SUCCEEDED(
++                rozelynxResolverURI->GetAsciiHost(rozelynxResolverHost)) &&
++            !rozelynxResolverHost.IsEmpty() &&
++            rozelynxResolverHost.Equals(
++                mConnInfo->GetOrigin(), nsCaseInsensitiveCStringComparator)) {
++          rozelynxIsProviderHost = true;
++        }
++      }
++      if (rozelynxIsProviderHost) {
++        MOZ_LOG(gHttpLog, LogLevel::Info,
++                ("HTTPSRecordResolver FetchHTTPSRRInternal: %s RozeLynx "
++                 "netiface %s - provider host, no resolver URL\n",
++                 mConnInfo->GetOrigin().BeginReading(),
++                 rozelynxBindIface.get()));
++        rozelynxResolverURL.Truncate();
++      }
++    }
+   }
+ 
+   nsCOMPtr<nsIDNSAdditionalInfo> info;
+@@ -266,6 +303,36 @@
+     if (rozelynxResolverURL.IsEmpty() && TRRService::Get()) {
+       TRRService::Get()->GetURI(rozelynxResolverURL);
+     }
++    // RozeLynx netiface: never carry a resolver URL on the DoH provider's
++    // OWN host lookups - see FetchHTTPSRRInternal for the rationale. The
++    // SVCB TargetName prefetch would otherwise poison the provider host's
++    // per-interface cache entry with an mTrrServer record that upstream
++    // NameLookup fails instantly (NS_ERROR_UNKNOWN_HOST).
++    if (!rozelynxResolverURL.IsEmpty()) {
++      bool rozelynxIsProviderHost =
++          (TRRService::Get() &&
++           TRRService::Get()->IsProviderHost(aTargetName));
++      if (!rozelynxIsProviderHost) {
++        nsCOMPtr<nsIURI> rozelynxResolverURI;
++        nsAutoCString rozelynxResolverHost;
++        if (NS_SUCCEEDED(NS_NewURI(getter_AddRefs(rozelynxResolverURI),
++                                   rozelynxResolverURL)) &&
++            NS_SUCCEEDED(
++                rozelynxResolverURI->GetAsciiHost(rozelynxResolverHost)) &&
++            !rozelynxResolverHost.IsEmpty() &&
++            rozelynxResolverHost.Equals(
++                aTargetName, nsCaseInsensitiveCStringComparator)) {
++          rozelynxIsProviderHost = true;
++        }
++      }
++      if (rozelynxIsProviderHost) {
++        MOZ_LOG(gHttpLog, LogLevel::Info,
++                ("HTTPSRecordResolver PrefetchAddrRecord: %s RozeLynx netiface "
++                 "%s - provider host, no resolver URL\n",
++                 aTargetName.BeginReading(), rozelynxBindIface.get()));
++        rozelynxResolverURL.Truncate();
++      }
++    }
+   }
+   nsCOMPtr<nsIDNSAdditionalInfo> info;
+   if (!rozelynxBindIface.IsEmpty()) {
+--- a/netwerk/protocol/http/HappyEyeballsConnectionAttempt.cpp
++++ b/netwerk/protocol/http/HappyEyeballsConnectionAttempt.cpp
+@@ -24,6 +24,7 @@
+ #include "nsHttpTransaction.h"
+ #include "nsIDNSAdditionalInfo.h"
+ #include "nsIHttpActivityObserver.h"
++#include "nsNetUtil.h"  // RozeLynx netiface: NS_NewURI (provider-host guard)
+ #include "nsQueryObject.h"
+ #include "nsSocketTransport2.h"
+ #include "nsSocketTransportService2.h"
+@@ -816,6 +817,40 @@
+                aHostname.BeginReading(), rozelynxBindIface.get(),
+                rozelynxResolverURL.get()));
+     }
++    // RozeLynx netiface: never carry a resolver URL on the DoH provider's
++    // OWN host lookups. Upstream NameLookup routes mTrrServer records
++    // through the custom-server branch, where the provider-host native
++    // decision (TRR_DISABLED_MODE) dies instantly with
++    // NS_ERROR_UNKNOWN_HOST, and a provider-host record keyed to its own
++    // resolver URL would recurse into the very DoH connection it
++    // bootstraps. An empty resolver URL keeps the record on the native
++    // path (bootstrap via the default route; getaddrinfo cannot bind -
++    // accepted tradeoff, same as DoH-off).
++    if (!rozelynxResolverURL.IsEmpty()) {
++      bool rozelynxIsProviderHost =
++          (TRRService::Get() &&
++           TRRService::Get()->IsProviderHost(aHostname));
++      if (!rozelynxIsProviderHost) {
++        nsCOMPtr<nsIURI> rozelynxResolverURI;
++        nsAutoCString rozelynxResolverHost;
++        if (NS_SUCCEEDED(NS_NewURI(getter_AddRefs(rozelynxResolverURI),
++                                   rozelynxResolverURL)) &&
++            NS_SUCCEEDED(
++                rozelynxResolverURI->GetAsciiHost(rozelynxResolverHost)) &&
++            !rozelynxResolverHost.IsEmpty() &&
++            rozelynxResolverHost.Equals(
++                aHostname, nsCaseInsensitiveCStringComparator)) {
++          rozelynxIsProviderHost = true;
++        }
++      }
++      if (rozelynxIsProviderHost) {
++        MOZ_LOG(gHttpLog, LogLevel::Info,
++                ("HappyEyeballs DNSLookup: %s RozeLynx netiface %s - provider "
++                 "host, no resolver URL\n",
++                 aHostname.BeginReading(), rozelynxBindIface.get()));
++        rozelynxResolverURL.Truncate();
++      }
++    }
+   }
+   if (dns) {
+     nsIDNSService::DNSFlags flags = aFlags.unwrap();

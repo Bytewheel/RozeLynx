@@ -1,0 +1,66 @@
+RozeLynx netiface v13: attributed extension DNS lookups (browser.dns.resolve).
+
+Extensions that resolve hostnames themselves (uBlock Origin's
+dnsResolveEnabled — dnsResolve() calls browser.dns.resolve(hn,
+['canonical_name']) from a blocking onBeforeRequest listener — AdGuard,
+proxy checkers) pass no AdditionalInfo into Services.dns.asyncResolve, so
+those lookups land in the unpartitioned (bindIface="") DNS partition and
+egress the default route (global DoH or native UDP/53), leaking bound-tab
+hostnames. All channel-driven lookups are already interface-bound (v11/v12).
+
+Fix: consult the netiface component's host->binding activity index
+(additionalInfoForHost) — recorded inside ResolveForChannel at channel
+BeginConnect and AsyncOpen entry, most-recent-wins per host — and attach the
+returned nsIDNSAdditionalInfo (per-interface resolver URL + bindIface) to
+the lookup. Downstream machinery is unchanged: per-interface cache
+partition, forced TRR-only for assigned records (NameLookup guard), bound
+DoH channel (TRR::SendHTTPRequest), no native fallback.
+
+When additionalInfoForHost returns null (host unattributed / never-bind /
+feature or dnsAttribution off / build without USE=net-iface) the stock
+unbound behavior is preserved. When attributed, RESOLVE_DISABLE_TRR is
+stripped so a caller-requested native lookup cannot bypass the interface's
+DoH path.
+
+--- a/toolkit/components/extensions/parent/ext-dns.js
++++ b/toolkit/components/extensions/parent/ext-dns.js
+@@ -32,6 +32,30 @@
+             0
+           );
+ 
++          // RozeLynx netiface v13: attribute extension DNS lookups
++          // (browser.dns.resolve — uBlock Origin's dnsResolveEnabled and
++          // anything else using the API) to the interface most recently
++          // used by a channel for this host. Without this the lookup
++          // carries no AdditionalInfo, lands in the unpartitioned DNS
++          // partition and egresses the default route — leaking bound-tab
++          // hostnames past per-interface DoH. Null (unattributed,
++          // never-bind, feature off, or build without net-iface) keeps
++          // stock behavior.
++          let additionalInfo = null;
++          try {
++            additionalInfo = Cc["@bytewheel.org/netiface;1"]
++              .getService(Ci.nsIRozeLynxNetIface)
++              .additionalInfoForHost(hostname);
++          } catch (e) {
++            // No netiface service (build without USE=net-iface) — unattributed.
++          }
++          if (additionalInfo) {
++            // Attributed lookups must ride the interface's DoH path; a
++            // caller-requested native lookup (disable_trr flag) would
++            // egress the default route.
++            dnsFlags &= ~Ci.nsIDNSService.RESOLVE_DISABLE_TRR;
++          }
++
+           return new Promise((resolve, reject) => {
+             let request;
+             let response = {
+@@ -68,7 +92,7 @@
+                 hostname,
+                 Ci.nsIDNSService.RESOLVE_TYPE_DEFAULT,
+                 dnsFlags,
+-                null, // AdditionalInfo
++                additionalInfo, // RozeLynx netiface: attributed (or null)
+                 listener,
+                 null,
+                 {} /* defaultOriginAttributes */

@@ -1,0 +1,33 @@
+diff --git a/browser/components/preferences/config/tabs-browsing.mjs b/browser/components/preferences/config/tabs-browsing.mjs
+index 0c03ff7..cbbd27e 100644
+--- a/browser/components/preferences/config/tabs-browsing.mjs
++++ b/browser/components/preferences/config/tabs-browsing.mjs
+@@ -450,22 +450,20 @@ Preferences.addSetting({
+ Preferences.addSetting({
+   id: "linkPreviewEnabled",
+   pref: "browser.ml.linkPreview.enabled",
++});
++Preferences.addSetting({
++  id: "linkPreviewKeyPoints",
++  pref: "browser.ml.linkPreview.optin",
+   deps: ["aiControlDefault", "aiControlLinkPreviews"],
+   visible: ({ aiControlDefault, aiControlLinkPreviews }) => {
+     return (
+       window.canShowAiFeature(aiControlLinkPreviews, aiControlDefault) &&
++      // LinkPreview.canShowKeyPoints depends on the global genai pref.
+       // @ts-ignore bug 1996860
+-      lazy.LinkPreview.canShowPreferences
++      lazy.LinkPreview.canShowKeyPoints
+     );
+   },
+ });
+-Preferences.addSetting({
+-  id: "linkPreviewKeyPoints",
+-  pref: "browser.ml.linkPreview.optin",
+-  // LinkPreview.canShowKeyPoints depends on the global genai pref.
+-  // @ts-ignore bug 1996860
+-  visible: () => lazy.LinkPreview.canShowKeyPoints,
+-});
+ Preferences.addSetting({
+   id: "linkPreviewLongPress",
+   pref: "browser.ml.linkPreview.longPress",

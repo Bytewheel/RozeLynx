@@ -1,0 +1,20 @@
+RozeLynx
+
+=========================================
+Portable Features Extension for Firefox
+=========================================
+
+This extension provides optional features originally developed for the Floorp
+browser, adapted for RozeLynx. Each feature is controlled by a USE flag at
+build time and is loaded as a separate module within this extension.
+
+Features:
+- chrome-web-store: Install extensions from Chrome Web Store
+- experiments: A/B testing and feature flag system
+- external-browser: Open links in other installed browsers
+- i18n: Internationalization utilities
+- mouse-gestures: Mouse gesture navigation
+- qr-code: QR code generator for current URL
+- pwa: Progressive Web App installation
+- lepton-skin: Compact UI theme
+- ip-protection: IP protection privacy overrides

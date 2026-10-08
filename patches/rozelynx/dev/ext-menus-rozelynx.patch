@@ -1,0 +1,217 @@
+diff -ruN a/browser/components/extensions/parent/ext-menus.js b/browser/components/extensions/parent/ext-menus.js
+--- a/browser/components/extensions/parent/ext-menus.js	2026-08-12 17:34:05.126280530 -0400
++++ b/browser/components/extensions/parent/ext-menus.js	2026-08-12 17:34:26.827720362 -0400
+@@ -1393,6 +1393,150 @@
+     return {
+       contextMenus: menus,
+       menus,
++
++      // RozeLynx-internal: enumerate context menu items registered by other
++      // extensions that apply to the given synthetic context. Restricted to
++      // the RozeLynx feature extension (mouse-gestures extension-menu bridge).
++      rozelynxQuery: async (contextData = {}) => {
++        if (extension.id !== "rozelynx-features@bytewheel.org") {
++          throw new ExtensionError("rozelynxQuery is RozeLynx-internal");
++        }
++        const { src, tag, href, imgSrc, mediaSrc, hasSelection } = contextData;
++        const isLink = !!href;
++        const isImage = !!imgSrc;
++        const isMedia = !!mediaSrc;
++        const editableTags = new Set(["INPUT", "TEXTAREA", "SELECT"]);
++        const fake = {
++          onLink: isLink,
++          linkUrl: isLink ? href : undefined,
++          onImage: isImage,
++          onAudio: false,
++          onVideo: isMedia,
++          srcUrl: isImage ? imgSrc : isMedia ? mediaSrc : undefined,
++          isTextSelected: !!hasSelection,
++          onEditable: editableTags.has(String(tag || "").toUpperCase()),
++          inFrame: false,
++          pageUrl: src || "about:blank",
++          menu: { id: "contentAreaContextMenu" },
++          webExtBrowserType: undefined,
++          tab: undefined,
++        };
++        if (isLink) {
++          try {
++            fake.linkURI = Services.io.newURI(href);
++          } catch (e) {
++            fake.linkURI = null;
++          }
++        }
++        const results = [];
++        for (const [ext, menuMap] of gMenuMap) {
++          if (ext.id === extension.id) {
++            continue;
++          }
++          for (const menuItem of menuMap.values()) {
++            // Every read of a MenuItem happens inside this try. One item that
++            // throws used to abort the whole query, after which the section
++            // rendered empty and the only symptom anywhere was a generic "An
++            // unexpected error occurred" in the console - indistinguishable
++            // from "no extension has any menu items", which is what made this
++            // failure so hard to place.
++            try {
++              if (!menuItem.enabledForContext(fake)) {
++                continue;
++              }
++              // The parent test reads menuItem.parentId, the item's own getter.
++              // It used to read `.root` to decide whether the parent was the
++              // synthesized top-level item, but that getter lazily CONSTRUCTS a
++              // root MenuItem when gRootItems has no entry for the extension,
++              // and the constructor assigns an id through
++              // `gMenuMap.get(ext).has(id)` - a TypeError for any extension with
++              // no gMenuMap entry. So the one expression deciding "is this a
++              // submenu" was also the only code here able to throw, and it read
++              // a private global besides. Whether the parent is a real item is
++              // answerable from the map already in hand: the synthesized root
++              // is not in it.
++              const parentId = menuItem.parentId;
++              results.push({
++              extId: ext.id,
++              extName: ext.name || ext.id,
++              itemId: menuItem.id,
++              parentId:
++                parentId !== undefined && menuMap.has(parentId)
++                  ? parentId
++                  : undefined,
++              title:
++                menuItem.title ||
++                (menuItem.type === "separator" ? "" : "untitled"),
++              type: menuItem.type,
++              checked: !!menuItem.checked,
++              enabled: menuItem.enabled !== false,
++              });
++            } catch (e) {
++              // Skipped, and said so: an unreadable item should cost that one
++              // item, not the whole section, and it should not do it quietly.
++              console.warn(
++                `rozelynxQuery: skipping an item of ${ext.id}: ${e}`
++              );
++            }
++          }
++        }
++        return results;
++      },
++
++      // RozeLynx-internal: synthesize a click on another extension's context
++      // menu item with a minimal fake context. Restricted to the RozeLynx
++      // feature extension.
++      rozelynxTrigger: async (request = {}) => {
++        if (extension.id !== "rozelynx-features@bytewheel.org") {
++          throw new ExtensionError("rozelynxTrigger is RozeLynx-internal");
++        }
++        const { extId, itemId, src } = request;
++        let targetExt = null;
++        let menuMap = null;
++        for (const [ext, map] of gMenuMap) {
++          if (ext.id === extId) {
++            targetExt = ext;
++            menuMap = map;
++            break;
++          }
++        }
++        if (!targetExt) {
++          throw new ExtensionError(`no menus for extension ${extId}`);
++        }
++        const menuItem = menuMap.get(itemId);
++        if (!menuItem) {
++          throw new ExtensionError(`no menu item ${itemId}`);
++        }
++        if (menuItem.type === "checkbox") {
++          menuItem.checked = !menuItem.checked;
++        } else if (menuItem.type === "radio") {
++          // Guarded for the same reason the query no longer reads `.root`:
++          // `menuItem.parent` is null for a top-level item, so a radio item
++          // declared without a parent took the whole trigger down with a
++          // TypeError instead of merely checking itself.
++          if (menuItem.parent) {
++            for (const child of menuItem.parent.children) {
++              if (
++                child.type === "radio" &&
++                child.groupName === menuItem.groupName
++              ) {
++                child.checked = false;
++              }
++            }
++          }
++          menuItem.checked = true;
++        }
++        const fake = {
++          pageUrl: src || "about:blank",
++          inFrame: false,
++          tab: undefined,
++          menu: { id: "contentAreaContextMenu" },
++        };
++        const info = menuItem.getClickInfo(fake, !menuItem.checked);
++        targetExt.emit("webext-menu-menuitem-click", info, undefined);
++        return true;
++      },
++
+       menusInternal: {
+         create: async createProperties => {
+           await this.#promiseInitialized;
+diff -ruN a/browser/components/extensions/schemas/menus.json b/browser/components/extensions/schemas/menus.json
+--- a/browser/components/extensions/schemas/menus.json	2026-08-12 17:34:05.119511578 -0400
++++ b/browser/components/extensions/schemas/menus.json	2026-08-12 17:34:26.827023119 -0400
+@@ -504,6 +504,59 @@
+         "description": "Updates the extension items in the shown menu, including changes that have been made since the menu was shown. Has no effect if the menu is hidden. Rebuilding a shown menu is an expensive operation, only invoke this method when necessary.",
+         "async": true,
+         "parameters": []
++      },
++      {
++        "name": "rozelynxQuery",
++        "type": "function",
++        "description": "RozeLynx-internal: list context menu items registered by all extensions that apply to the given synthetic context.",
++        "async": "callback",
++        "parameters": [
++          {
++            "name": "contextData",
++            "type": "object",
++            "properties": {
++              "src": { "type": "string", "optional": true },
++              "tag": { "type": "string", "optional": true },
++              "href": { "type": "string", "optional": true },
++              "imgSrc": { "type": "string", "optional": true },
++              "mediaSrc": { "type": "string", "optional": true },
++              "hasSelection": { "type": "boolean", "optional": true }
++            }
++          }
++        ],
++        "returns": {
++          "type": "array",
++          "items": {
++            "type": "object",
++            "properties": {
++              "extId": { "type": "string" },
++              "extName": { "type": "string" },
++              "itemId": { "choices": [ { "type": "integer" }, { "type": "string" } ] },
++              "parentId": { "choices": [ { "type": "integer" }, { "type": "string" } ], "optional": true },
++              "title": { "type": "string" },
++              "type": { "type": "string" },
++              "checked": { "type": "boolean" },
++              "enabled": { "type": "boolean" }
++            }
++          }
++        }
++      },
++      {
++        "name": "rozelynxTrigger",
++        "type": "function",
++        "description": "RozeLynx-internal: dispatch a click on another extension's menu item (synthesized info).",
++        "async": "callback",
++        "parameters": [
++          {
++            "name": "request",
++            "type": "object",
++            "properties": {
++              "extId": { "type": "string" },
++              "itemId": { "choices": [ { "type": "integer" }, { "type": "string" } ] },
++              "src": { "type": "string", "optional": true }
++            }
++          }
++        ]
+       }
+     ],
+     "events": [

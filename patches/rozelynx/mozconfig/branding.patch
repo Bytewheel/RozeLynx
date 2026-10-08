@@ -1,0 +1,26 @@
+diff --git a/browser/branding/official/branding.nsi b/browser/branding/official/branding.nsi
+--- a/browser/branding/official/branding.nsi
++++ b/browser/branding/official/branding.nsi
+@@ -1,6 +1,6 @@
+ # BrandFullNameInternal and BrandShortNameInternal are gated on official
+ # branding. Replace them with RozeLynx strings.
+-!define BrandFullNameInternal "Mozilla Firefox"
+-!define BrandShortNameInternal "Firefox"
+-!define BrandFullName "Mozilla Firefox"
+-!define BrandShortName "Firefox"
++!define BrandFullNameInternal "RozeLynx"
++!define BrandShortNameInternal "RozeLynx"
++!define BrandFullName "RozeLynx"
++!define BrandShortName "RozeLynx"
+diff --git a/browser/branding/official/branding.nsi b/browser/branding/official/branding.nsi
+--- a/browser/branding/official/configure.sh
++++ b/browser/branding/official/configure.sh
+@@ -1,4 +1,4 @@
+-MOZ_APP_DISPLAYNAME="Firefox"
+-MOZ_APP_NAME="firefox"
+-MOZ_APP_PROFILE="Firefox"
+-MOZ_APP_VENDOR="Mozilla"
++MOZ_APP_DISPLAYNAME="RozeLynx"
++MOZ_APP_NAME="rozelynx"
++MOZ_APP_PROFILE="RozeLynx"
++MOZ_APP_VENDOR="ByteWheel"

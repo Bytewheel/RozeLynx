@@ -1,0 +1,127 @@
+/* RozeLynx external-link chooser page */
+
+:root {
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  font-family: system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell,
+    sans-serif;
+  background: light-dark(#f5f6f8, #232528);
+  color: light-dark(#1d1d1f, #e8e8ea);
+}
+
+.chooser {
+  width: min(560px, calc(100vw - 2rem));
+  background: light-dark(#ffffff, #2b2d31);
+  border: 1px solid light-dark(#e0e2e6, #3c3f45);
+  border-radius: 12px;
+  padding: 24px 28px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.18);
+}
+
+.chooser-header h1 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.target-url {
+  margin: 0 0 18px;
+  font-size: 13px;
+  color: light-dark(#555, #9aa);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+
+.field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+select {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 14px;
+  border: 1px solid light-dark(#c6c9ce, #4a4d54);
+  border-radius: 8px;
+  background: light-dark(#fff, #232528);
+  color: inherit;
+}
+
+select:focus {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 1px;
+}
+
+.hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: light-dark(#777, #99a);
+}
+
+.check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 4px 0 14px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: light-dark(#444, #bcc);
+}
+
+.check input {
+  margin-top: 2px;
+}
+
+.status {
+  min-height: 1.4em;
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: light-dark(#2a7d2a, #7ed07e);
+}
+
+.status.error {
+  color: light-dark(#c0392b, #ff8a80);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+button.primary {
+  padding: 9px 22px;
+  font-size: 14px;
+  border: none;
+  border-radius: 8px;
+  background: #8b5cf6;
+  color: #fff;
+  cursor: pointer;
+}
+
+button.primary:hover {
+  background: #7c4ce0;
+}
+
+button.primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

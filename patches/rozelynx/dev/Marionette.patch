@@ -1,0 +1,12 @@
+diff --git a/remote/components/Marionette.sys.mjs b/remote/components/Marionette.sys.mjs
+--- a/remote/components/Marionette.sys.mjs
++++ b/remote/components/Marionette.sys.mjs
+@@ -140,7 +140,7 @@ class MarionetteParentProcess {
+             Services.obs.addObserver(this, "domwindowopened");
+           }
+ 
+-          lazy.RecommendedPreferences.applyPreferences();
++          //lazy.RecommendedPreferences.applyPreferences();
+ 
+           // Only set preferences to preserve in a new profile
+           // when Marionette is enabled.

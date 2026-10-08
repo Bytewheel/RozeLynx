@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Default browser
+Comment=Opens rozelynx-ext: URLs with the system default browser
+Exec=@EXEC@ %u
+Icon=rozelynx
+MimeType=x-scheme-handler/rozelynx-ext;
+NoDisplay=true
+Terminal=false
+Categories=Network;WebBrowser;

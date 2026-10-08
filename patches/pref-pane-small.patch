@@ -1,0 +1,157 @@
+diff --git a/browser/components/preferences/jar.mn b/browser/components/preferences/jar.mn
+--- a/browser/components/preferences/jar.mn
++++ b/browser/components/preferences/jar.mn
+@@ -12,6 +12,7 @@ browser.jar:
+    content/browser/preferences/home.js
+    content/browser/preferences/search.js
+    content/browser/preferences/privacy.js
++   content/browser/preferences/librewolf.js
+    content/browser/preferences/sync.js
+    content/browser/preferences/moreFromMozilla.js
+    content/browser/preferences/fxaPairDevice.xhtml
+diff --git a/browser/components/preferences/main.js b/browser/components/preferences/main.js
+--- a/browser/components/preferences/main.js
++++ b/browser/components/preferences/main.js
+@@ -711,6 +711,70 @@ SettingGroupManager.registerGroups({
+   startup: createStartupConfig(
+     Services.prefs.getBoolPref("browser-settings-redesign.enabled", false)
+   ),
++  librewolfBehavior: {
++    l10nId: "librewolf-general-heading2",
++    headingLevel: 2,
++    items: [
++      {
++        id: "librewolfExtensionUpdate",
++        l10nId: "librewolf-extension-update-checkbox2",
++      },
++      {
++        id: "librewolfSync",
++        l10nId: "librewolf-sync-checkbox2",
++      },
++      {
++        id: "librewolfMiddleClick",
++        l10nId: "librewolf-autocopy-checkbox2",
++      },
++      {
++        id: "librewolfUserChrome",
++        l10nId: "librewolf-styling-checkbox2",
++      },
++    ],
++  },
++  librewolfNetworking: {
++    l10nId: "librewolf-network-heading2",
++    headingLevel: 2,
++    items: [
++      {
++        id: "librewolfIPv6",
++        l10nId: "librewolf-ipv6-checkbox2",
++      }
++    ],
++  },
++  librewolfPrivacy: {
++    l10nId: "librewolf-privacy-heading2",
++    headingLevel: 2,
++    items: [
++      {
++        id: "librewolfCrossOrigin",
++        l10nId: "librewolf-xorigin-ref-checkbox2",
++      },
++    ],
++  },
++  librewolfFingerprinting: {
++    l10nId: "librewolf-broken-heading2",
++    headingLevel: 2,
++    items: [
++      {
++        id: "librewolfRFP",
++        l10nId: "librewolf-rfp-checkbox2",
++      },
++      {
++        id: "librewolfLetterboxing",
++        l10nId: "librewolf-letterboxing-checkbox2",
++      },
++      {
++        id: "librewolfWebGLPrompt",
++        l10nId: "librewolf-webgl-checkbox2",
++      },
++      {
++        id: "librewolfWebGLPromptHide",
++        l10nId: "librewolf-webgl-prompt-checkbox2",
++      },
++    ],
++  },
+ });
+ 
+ /**
+diff --git a/browser/components/preferences/preferences.js b/browser/components/preferences/preferences.js
+--- a/browser/components/preferences/preferences.js
++++ b/browser/components/preferences/preferences.js
+@@ -7,6 +7,7 @@
+ /* import-globals-from home.js */
+ /* import-globals-from search.js */
+ /* import-globals-from privacy.js */
++/* import-globals-from librewolf.js */
+ /* import-globals-from sync.js */
+ /* import-globals-from moreFromMozilla.js */
+ /* import-globals-from findInPage.js */
+@@ -527,6 +528,7 @@ function init_all() {
+   register_module("paneHome", gHomePane);
+   register_module("paneSearch", gSearchPane);
+   register_module("panePrivacy", gPrivacyPane);
++  register_module("paneLibrewolf", gLibrewolfPane);
+ 
+   // Restore the cached Firefox Labs nav button visibility so it shows
+   // immediately when recipes are expected to be available, before
+diff --git a/browser/components/preferences/preferences.xhtml b/browser/components/preferences/preferences.xhtml
+--- a/browser/components/preferences/preferences.xhtml
++++ b/browser/components/preferences/preferences.xhtml
+@@ -35,6 +35,7 @@
+   <link rel="stylesheet" href="chrome://browser/skin/preferences/search.css" />
+   <link rel="stylesheet" href="chrome://browser/content/usercontext/usercontext.css" />
+   <link rel="stylesheet" href="chrome://browser/skin/preferences/privacy.css" />
++  <link rel="stylesheet" href="chrome://browser/skin/preferences/librewolf.css" />
+   <link rel="stylesheet" href="chrome://browser/content/preferences/widgets/setting-group.css" />
+   <link rel="stylesheet" href="chrome://browser/content/preferences/widgets/setting-pane.css" />
+   <link rel="stylesheet" href="chrome://browser/content/preferences/widgets/setting-control.css" />
+@@ -170,10 +171,10 @@
+         iconsrc="chrome://browser/skin/translations.svg"
+         data-l10n-id="pane-languages-title2">
+       </html:moz-page-nav-button>
+-      <html:moz-page-nav-button id="category-ai-features"
+-        view="paneAi"
+-        iconsrc="chrome://global/skin/icons/highlights.svg"
+-        data-l10n-id="pane-ai-controls-title2">
++      <html:moz-page-nav-button id="category-librewolf"
++        view="paneLibrewolf"
++        iconsrc="chrome://browser/skin/preferences/category-librewolf.svg"
++        data-l10n-id="pane-librewolf-title2">
+       </html:moz-page-nav-button>
+       <html:moz-page-nav-button id="category-permissions-data"
+         view="panePermissionsData"
+@@ -246,6 +247,7 @@
+ #include home.inc.xhtml
+ #include search.inc.xhtml
+ #include privacy.inc.xhtml
++#include librewolf.inc.xhtml
+ #include sync.inc.xhtml
+ #include moreFromMozilla.inc.xhtml
+         </vbox>
+diff --git a/browser/themes/shared/jar.inc.mn b/browser/themes/shared/jar.inc.mn
+--- a/browser/themes/shared/jar.inc.mn
++++ b/browser/themes/shared/jar.inc.mn
+@@ -155,6 +155,7 @@
+   skin/classic/browser/preferences/category-general.svg        (../shared/preferences/category-general.svg)
+   skin/classic/browser/preferences/category-accessibility.svg  (../shared/preferences/category-accessibility.svg)
+   skin/classic/browser/preferences/category-privacy-security.svg    (../shared/preferences/category-privacy-security.svg)
++  skin/classic/browser/preferences/category-librewolf.svg    (../shared/preferences/category-librewolf.svg)
+   skin/classic/browser/preferences/category-search.svg         (../shared/preferences/category-search.svg)
+   skin/classic/browser/preferences/category-sync.svg           (../shared/preferences/category-sync.svg)
+   skin/classic/browser/preferences/containers-dialog.css       (../shared/preferences/containers-dialog.css)
+@@ -172,6 +173,7 @@
+   skin/classic/browser/preferences/vpn-logo.svg                (../shared/preferences/vpn-logo.svg)
+   skin/classic/browser/preferences/search.css                  (../shared/preferences/search.css)
+   skin/classic/browser/preferences/siteDataSettings.css        (../shared/preferences/siteDataSettings.css)
++  skin/classic/browser/preferences/librewolf.css               (../shared/preferences/librewolf.css)
+   skin/classic/browser/translations/panel.css                  (../shared/translations/panel.css)
+   skin/classic/browser/fxa/fxa-spinner.svg                     (../shared/fxa/fxa-spinner.svg)
+   skin/classic/browser/fxa/sync-illustration.svg               (../shared/fxa/sync-illustration.svg)

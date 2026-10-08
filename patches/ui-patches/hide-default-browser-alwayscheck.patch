@@ -1,0 +1,70 @@
+diff --git a/browser/components/preferences/main.js b/browser/components/preferences/main.js
+index c86e54b..bdfcc7b 100644
+--- a/browser/components/preferences/main.js
++++ b/browser/components/preferences/main.js
+@@ -494,65 +494,6 @@ const DefaultBrowserHelper = {
+   },
+ };
+ 
+-Preferences.addSetting({
+-  id: "alwaysCheckDefault",
+-  pref: "browser.shell.checkDefaultBrowser",
+-  setup: emitChange => {
+-    if (!DefaultBrowserHelper.canCheck) {
+-      return;
+-    }
+-    DefaultBrowserHelper.pollForDefaultChanges(emitChange);
+-    // eslint-disable-next-line consistent-return
+-    return () => DefaultBrowserHelper.clearPollingForDefaultChanges();
+-  },
+-  /**
+-   * Show button for setting browser as default browser or information that
+-   * browser is already the default browser.
+-   */
+-  visible: () => DefaultBrowserHelper.canCheck,
+-  disabled: (_, setting) =>
+-    !DefaultBrowserHelper.canCheck ||
+-    setting.locked ||
+-    DefaultBrowserHelper.isBrowserDefault,
+-});
+-
+-Preferences.addSetting({
+-  id: "isDefaultPane",
+-  deps: ["alwaysCheckDefault"],
+-  visible: () =>
+-    DefaultBrowserHelper.canCheck && DefaultBrowserHelper.isBrowserDefault,
+-});
+-
+-Preferences.addSetting({
+-  id: "isNotDefaultPane",
+-  deps: ["alwaysCheckDefault"],
+-  visible: () =>
+-    DefaultBrowserHelper.canCheck && !DefaultBrowserHelper.isBrowserDefault,
+-  onUserClick: (e, { alwaysCheckDefault }) => {
+-    if (!DefaultBrowserHelper.canCheck) {
+-      return;
+-    }
+-    const setDefaultButton = /** @type {MozButton} */ (e.target);
+-
+-    if (!setDefaultButton) {
+-      return;
+-    }
+-    if (setDefaultButton.disabled) {
+-      return;
+-    }
+-
+-    /**
+-     * Disable the set default button, so that the user
+-     * doesn't try to hit it again while browser is being set to default.
+-     */
+-    setDefaultButton.disabled = true;
+-    alwaysCheckDefault.value = true;
+-    DefaultBrowserHelper.setDefaultBrowser().finally(() => {
+-      setDefaultButton.disabled = false;
+-    });
+-  },
+-});
+-
+ // AI Control pref settings
+ Preferences.addSetting({
+   id: "aiControlDefault",

@@ -1,0 +1,38 @@
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
+# vim: set filetype=python:
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+EXPORTS.mozilla.net += [
+    "RozeLynxNetIface.h",
+]
+
+UNIFIED_SOURCES += [
+    "RozeLynxNetIface.cpp",
+]
+
+XPIDL_SOURCES += [
+    "nsIRozeLynxNetIface.idl",
+]
+
+XPIDL_MODULE = "rozelynxNetIface"
+
+XPCOM_MANIFESTS += [
+    "components.conf",
+]
+
+LOCAL_INCLUDES += [
+    "/dom/base",
+    # RozeLynx v13: DNSAdditionalInfo (attributed extension DNS lookups) and
+    # TRRService (global network.trr.uri fallback) live in netwerk/dns.
+    "/netwerk/dns",
+]
+
+# RozeLynx v13: TRRService.h pulls TRR.h -> DNSPacket.h -> DNSByTypeRecord.h
+# -> ipc/glue/IPCMessageUtils.h, which needs the vendored chromium IPC
+# headers (chrome/common/ipc_message.h) and the IPDL-generated headers.
+# Same include set netwerk/dns itself uses.
+include("/ipc/chromium/chromium-config.mozbuild")
+
+FINAL_LIBRARY = "xul"

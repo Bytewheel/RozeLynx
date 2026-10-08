@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a2e;
+    --fg-muted: #6b7280;
+    --card-border: #e5e7eb;
+    --toggle-off: #d1d5db;
+    --ok: #059669;
+    --err: #DC2626;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e2e;
+      --fg: #cdd6f4;
+      --fg-muted: #a6adc8;
+      --card-border: #313244;
+      --toggle-off: #45475a;
+      --ok: #34d399;
+      --err: #f87171;
+    }
+  }
+  body { font-family: -apple-system, sans-serif; max-width: 600px; margin: 20px auto; padding: 0 16px; color: var(--fg); background: var(--bg); }
+  h1 { color: #8B5CF6; font-size: 20px; }
+  .feature { border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 16px; margin: 8px 0; display: flex; justify-content: space-between; align-items: center; }
+  .feature-name { font-weight: 600; }
+  .feature-desc { font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
+  .toggle { width: 44px; height: 24px; background: var(--toggle-off); border-radius: 12px; cursor: pointer; position: relative; border: none; transition: background 0.2s; }
+  .toggle.on { background: #8B5CF6; }
+  .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: white; border-radius: 50%; transition: transform 0.2s; }
+  .toggle.on::after { transform: translateX(20px); }
+  .status { font-size: 12px; color: var(--ok); margin-top: 16px; }
+  .status.error { color: var(--err); }
+  .hint { font-size: 12px; color: var(--fg-muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+<h1>RozeLynx Features</h1>
+<p>Enable or disable individual features. Changes take effect immediately.</p>
+<div id="features"></div>
+<p class="hint" id="lepton-hint" style="display:none;">The Lepton skin toggles userChrome.css (browser chrome) and userContent.css (about: pages) and needs a browser restart to show.</p>
+<p class="hint" id="ip-hint" style="display:none;">Tracking/fingerprinting protection prefs stay ON in both states: the LibreWolf strict content blocking baseline forces them on this build.</p>
+<p class="status" id="status">Loading features...</p>
+<script src="options.js"></script>
+</body>
+</html>

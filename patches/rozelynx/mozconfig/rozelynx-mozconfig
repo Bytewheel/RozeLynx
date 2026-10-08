@@ -1,0 +1,6 @@
+imply_option("MOZ_APP_NAME", "rozelynx")
+imply_option("MOZ_APP_PROFILE", "RozeLynx")
+imply_option("MOZ_APP_UA_NAME", "Firefox")
+imply_option("MOZ_REQUIRE_SIGNING", False)
+imply_option("MOZ_TELEMETRY_REPORTING", False)
+imply_option("MOZ_PACKAGE_JSSHELL", True)

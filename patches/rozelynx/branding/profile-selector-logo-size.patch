@@ -1,0 +1,32 @@
+Make the profile selector logo 5x larger.
+
+Upstream draws the branding mark above "Choose a Profile" at a 64x64 .logo
+(profile-selector.css). RozeLynx replaces that slot with a proper illustration,
+and at 64px it is too small to read -- the 707x460 landscape scene in
+branding/main/no-text.png is centre-cropped into a square, so what survives at
+64px is the smallest part of the mark.
+
+320px is 5x the upstream size. The asset is unchanged: this is purely a
+consumer-side size, and the ebuild raises the raster embed in
+rozelynx_install_vector_slot for about-logo.svg from 192 to 960 so the new size
+still has 3x device-pixel headroom rather than upscaling a 192px embed.
+
+Identical in Firefox 155 and 156.
+
+--- a/browser/components/profiles/content/profile-selector.css
++++ b/browser/components/profiles/content/profile-selector.css
+@@ -16,8 +16,12 @@
+ }
+
+ .logo {
+-  width: 64px;
+-  height: 64px;
++  /* RozeLynx: upstream's 64px suits a small monochrome mark; this slot holds a
++   * full illustration (see branding/PLACEHOLDERS.md), which is unreadable at
++   * that size. The column is centred with padding: 8%, so growing the logo does
++   * not disturb the layout -- only the vertical rhythm below it shifts. */
++  width: 320px;
++  height: 320px;
+ }
+
+ .profiles-body-text {

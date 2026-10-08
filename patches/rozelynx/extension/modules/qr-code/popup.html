@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=320">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+/* `color-scheme` is what the UA uses to render the widgets the page cannot
+ * style: the popup a <select> opens, checkboxes, scrollbars, and the focus
+ * ring. Without it they follow the default (light) scheme whatever the OS
+ * says, so on a dark system the closed <select> looked right - every one of
+ * them is given an explicit background and colour below, in both schemes - and
+ * the list that dropped down on click was white, which is the bug this fixes.
+ * `light dark` (rather than a fixed scheme) is what keeps the UA widgets
+ * agreeing with the `prefers-color-scheme` queries the stylesheet uses, so
+ * there is one source of truth for "is it dark" instead of two that can
+ * disagree. */
+:root { color-scheme: light dark; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  padding: 16px;
+  min-width: 280px;
+  text-align: center;
+  background: #fff;
+  color: #333;
+}
+h3 { font-size: 14px; margin-bottom: 12px; color: #111; }
+canvas { border: 1px solid #e5e7eb; border-radius: 8px; padding: 4px; }
+#url-display {
+  margin-top: 10px;
+  /* The auto side margins are load-bearing. This is a BLOCK box, and the
+     body's `text-align: center` centres inline content only - it does not
+     centre the block itself. With no auto side margins the box sits hard
+     against the left padding, which is invisible while the popup is only as
+     wide as the QR canvas (max-width 260px nearly fills it) and obvious the
+     moment it is not: expanding "Interface bindings by URL" or "Download
+     hand-off" puts flex text inputs and a select in the popup, the popup
+     widens to fit them, and this box stays pinned left. The canvas is
+     inline-level, which is why the QR code itself never moved. */
+  margin-left: auto;
+  margin-right: auto;
+  padding: 8px 10px;
+  background: #f3f4f6;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #6b7280;
+  word-break: break-all;
+  max-width: 260px;
+  line-height: 1.4;
+}
+#loading { margin-top: 12px; color: #8B5CF6; }
+#error { margin-top: 12px; color: #DC2626; display: none; }
+button {
+  margin-top: 12px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: #8B5CF6;
+  color: white;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+button:hover { background: #7C3AED; }
+#pwa-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e5e7eb;
+  text-align: left;
+  width: 100%;
+}
+#pwa-section .pwa-heading { text-align: center; }
+#pwa-list { max-height: 220px; overflow-y: auto; }
+.pwa-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-radius: 6px;
+}
+.pwa-row:hover { background: #f3f4f6; }
+.pwa-icon { width: 20px; height: 20px; border-radius: 4px; flex: 0 0 auto; }
+.pwa-name {
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pwa-row button { margin-top: 0; padding: 4px 10px; font-size: 11px; }
+.pwa-row .pwa-remove {
+  background: transparent;
+  color: #9ca3af;
+  padding: 4px 6px;
+}
+.pwa-row .pwa-remove:hover { background: #fee2e2; color: #DC2626; }
+#pwa-empty {
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: center;
+  padding: 8px 4px;
+}
+#pwa-reconcile {
+  margin-top: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+#pwa-reconcile[disabled] { opacity: 0.6; }
+
+/* ── Interface bindings by URL (modules/netiface/urlrules-ui.js) ──────
+   The whole section is hidden by default and revealed by that script when
+   the netiface experiment API is present, so a build without USE=net-iface
+   shows no trace of it. */
+#urlrules-section { text-align: left; }
+#urlrules-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 0;
+  padding: 6px 4px;
+  background: transparent;
+  color: #333;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+}
+#urlrules-header:hover { background: #f3f4f6; }
+#urlrules-chevron {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 120ms ease-in-out;
+}
+#urlrules-header[aria-expanded="true"] #urlrules-chevron {
+  transform: rotate(90deg);
+}
+#urlrules-title { flex: 1 1 auto; }
+#urlrules-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 400;
+  color: #9ca3af;
+}
+#urlrules-body { padding: 4px 2px 2px 2px; }
+#urlrules-master {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding-bottom: 6px;
+}
+#urlrules-master input { margin: 0; }
+.urlrules-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+.urlrules-row input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+}
+.urlrules-row input[type="text"]:focus {
+  outline: 1px solid #8B5CF6;
+  border-color: #8B5CF6;
+}
+.urlrules-row select {
+  flex: 0 0 auto;
+  max-width: 108px;
+  padding: 4px 2px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+}
+.urlrules-row .urlrules-enabled { flex: 0 0 auto; margin: 0; }
+.urlrules-row button {
+  margin-top: 0;
+  padding: 3px 8px;
+  font-size: 11px;
+  background: transparent;
+  color: #9ca3af;
+}
+.urlrules-row button:hover { background: #fee2e2; color: #DC2626; }
+.urlrules-add { margin-top: 8px; }
+.urlrules-add button { margin-top: 0; }
+.urlrules-preview {
+  font-size: 11px;
+  color: #6b7280;
+  background: #f3f4f6;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+.urlrules-preview b { color: #333; }
+.urlrules-empty {
+  font-size: 11px;
+  color: #9ca3af;
+  padding: 4px 2px 6px 2px;
+}
+.urlrules-empty button {
+  margin-top: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 400;
+}
+.urlrules-hint {
+  font-size: 10px;
+  color: #9ca3af;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+.urlrules-status {
+  font-size: 11px;
+  margin-top: 6px;
+  min-height: 14px;
+  color: #6b7280;
+  word-break: break-word;
+}
+.urlrules-status.error { color: #DC2626; }
+
+/* ── Download hand-off (modules/downloads-handoff/handlers-ui.js) ──────
+   Same hidden-until-the-script-finds-the-module pattern as the section
+   above, for the same reason: the module is absent from a build without
+   USE=download-handoff and a static <script> tag would log a missing
+   resource on every popup open. */
+#handoff-section { text-align: left; }
+#handoff-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 0;
+  padding: 6px 4px;
+  background: transparent;
+  color: #333;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+}
+#handoff-header:hover { background: #f3f4f6; }
+#handoff-chevron {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 120ms ease-in-out;
+}
+#handoff-header[aria-expanded="true"] #handoff-chevron {
+  transform: rotate(90deg);
+}
+#handoff-title { flex: 1 1 auto; }
+#handoff-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 400;
+  color: #9ca3af;
+}
+#handoff-body { padding: 4px 2px 2px 2px; }
+#handoff-master-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding-bottom: 6px;
+}
+#handoff-master-wrap select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 2px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+}
+#handoff-mode {
+  font-size: 10px;
+  color: #9ca3af;
+  padding-bottom: 6px;
+  word-break: break-word;
+}
+.handoff-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+.handoff-row input[type="text"] {
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+}
+.handoff-row .handoff-id { flex: 1 1 40%; }
+.handoff-row .handoff-args { flex: 1 1 60%; }
+.handoff-row input[type="text"]:focus {
+  outline: 1px solid #8B5CF6;
+  border-color: #8B5CF6;
+}
+.handoff-row input[type="text"]:disabled {
+  background: #f9fafb;
+  color: #9ca3af;
+}
+.handoff-row .handoff-enabled { flex: 0 0 auto; margin: 0; }
+.handoff-row button {
+  margin-top: 0;
+  padding: 3px 8px;
+  font-size: 11px;
+  background: transparent;
+  color: #9ca3af;
+}
+.handoff-row button:hover { background: #fee2e2; color: #DC2626; }
+.handoff-note {
+  font-size: 10px;
+  color: #9ca3af;
+  padding: 0 2px 4px 2px;
+  word-break: break-word;
+}
+.handoff-note.off { color: #DC2626; }
+.handoff-add { margin-top: 8px; }
+.handoff-add button { margin-top: 0; }
+.handoff-add input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+}
+.handoff-add { display: flex; gap: 6px; }
+.handoff-empty {
+  font-size: 11px;
+  color: #9ca3af;
+  padding: 4px 2px 6px 2px;
+}
+.handoff-status {
+  font-size: 11px;
+  margin-top: 6px;
+  min-height: 14px;
+  color: #6b7280;
+  word-break: break-word;
+}
+.handoff-status.error { color: #DC2626; }
+.handoff-hint {
+  font-size: 10px;
+  color: #9ca3af;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  .pwa-row:hover { background: #313244; }
+  .pwa-name { color: #cdd6f4; }
+  #pwa-section { border-top-color: #313244; }
+  #urlrules-section { border-top-color: #313244; }
+  #urlrules-header { color: #cdd6f4; }
+  #urlrules-header:hover { background: #313244; }
+  .urlrules-row input[type="text"],
+  .urlrules-row select {
+    background: #313244;
+    border-color: #45475a;
+    color: #cdd6f4;
+  }
+  .urlrules-row button:hover { background: #f38ba8; color: #1e1e2e; }
+  .urlrules-preview { background: #313244; color: #a6adc8; }
+  .urlrules-preview b { color: #cdd6f4; }
+  .urlrules-status { color: #a6adc8; }
+  .urlrules-status.error { color: #f38ba8; }
+  #handoff-section { border-top-color: #313244; }
+  #handoff-header { color: #cdd6f4; }
+  #handoff-header:hover { background: #313244; }
+  #handoff-master-wrap select,
+  .handoff-row input[type="text"],
+  .handoff-add input[type="text"] {
+    background: #313244;
+    border-color: #45475a;
+    color: #cdd6f4;
+  }
+  .handoff-row input[type="text"]:disabled { background: #262637; }
+  .handoff-row button:hover { background: #f38ba8; color: #1e1e2e; }
+  .handoff-note.off { color: #f38ba8; }
+  .handoff-status { color: #a6adc8; }
+  .handoff-status.error { color: #f38ba8; }
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #1e1e2e; color: #cdd6f4; }
+  h3 { color: #cdd6f4; }
+  #url-display { background: #313244; color: #a6adc8; }
+  canvas { border-color: #45475a; }
+}
+</style>
+</head>
+<body>
+<h3>RozeLynx QR Code</h3>
+<div id="loading">Generating...</div>
+<div id="error"></div>
+<canvas id="qr-canvas" width="240" height="240" style="display:none;"></canvas>
+<div id="url-display" style="display:none;"></div>
+<button id="copy-btn" style="display:none;">Copy URL</button>
+<div id="pwa-section">
+  <h3 class="pwa-heading">Installed Apps</h3>
+  <div id="pwa-list"></div>
+  <div id="pwa-empty">No apps installed. Visit a PWA site and click its "Install App" button.</div>
+  <!--
+    Create any missing launcher entries on demand. The background already does
+    this once at start-up (DesktopEntry.reconcile); this is for the case where
+    the entries are gone afterwards - a wiped ~/.local/share, an applications
+    directory cleaned by hand - which would otherwise mean reinstalling every
+    app to get them back. Hidden until popup.js knows the pwa module answered,
+    so a build without USE=pwa does not show a button that cannot work.
+  -->
+  <button id="pwa-reconcile" type="button" hidden>Create missing launcher entries</button>
+</div>
+<!--
+  The per-URL interface rules editor is loaded by popup.js, not from here: it
+  lives in the netiface module (so it can move to its own popup later without
+  untangling this one) and that module is absent from a build without
+  USE=net-iface, so a static <script> tag would log a missing-resource error
+  on every popup open. The markup below stays `hidden` until the editor script
+  finds the netiface experiment API.
+-->
+<div id="urlrules-section" hidden>
+  <button type="button" id="urlrules-header" aria-expanded="false" aria-controls="urlrules-body">
+    <span id="urlrules-chevron" aria-hidden="true">&#9656;</span>
+    <span id="urlrules-title">Interface bindings by URL</span>
+    <span id="urlrules-count"></span>
+  </button>
+  <div id="urlrules-body" hidden>
+    <label id="urlrules-master">
+      <input type="checkbox" id="urlrules-enabled">
+      <span>Use URL rules for interface binding</span>
+    </label>
+    <div class="urlrules-preview" id="urlrules-preview"></div>
+    <div class="urlrules-empty" id="urlrules-empty" hidden>
+      No URL rules. Traffic follows your container and profile defaults.
+      <button type="button" id="urlrules-add-current">Add a rule for this site</button>
+    </div>
+    <div id="urlrules-list"></div>
+    <div class="urlrules-add">
+      <div class="urlrules-row">
+        <input type="text" id="urlrules-new-pattern" placeholder="*.example.com" spellcheck="false">
+        <select id="urlrules-new-iface"></select>
+        <button type="button" id="urlrules-add-btn">Add</button>
+      </div>
+    </div>
+    <div class="urlrules-status" id="urlrules-status"></div>
+    <div class="urlrules-hint">
+      A rule sends matching pages out through one interface.
+      <code>*.example.com</code> covers a host and its subdomains,
+      <code>example.com</code> only that host, <code>*</code> any host;
+      <code>*://host/mail</code> adds a scheme and a path prefix, and
+      <code>*</code> / <code>?</code> work inside the host. A tab you bound
+      by hand always wins, then a URL rule, then the container, then the
+      profile. An empty interface forces default routing for a match.
+    </div>
+  </div>
+</div>
+<!--
+  The download hand-off editor, like the URL-rules editor above, is loaded by
+  popup.js rather than from here: it lives in the downloads-handoff module, so
+  it is absent from the XPI on a build without USE=download-handoff. It stays
+  `hidden` until the script has talked to the background module and been told
+  what the handler list is.
+-->
+<div id="handoff-section" hidden>
+  <button type="button" id="handoff-header" aria-expanded="false" aria-controls="handoff-body">
+    <span id="handoff-chevron" aria-hidden="true">&#9656;</span>
+    <span id="handoff-title">Download hand-off</span>
+    <span id="handoff-count"></span>
+  </button>
+  <div id="handoff-body" hidden>
+    <label id="handoff-master-wrap">
+      <span>Hand downloads off to</span>
+      <select id="handoff-enabled">
+        <option value="auto">whatever is available</option>
+        <option value="true">always</option>
+        <option value="false">never</option>
+      </select>
+    </label>
+    <div id="handoff-mode"></div>
+    <div class="handoff-empty" id="handoff-empty" hidden>
+      No handlers. Downloads stay in the browser.
+    </div>
+    <div id="handoff-list"></div>
+    <div class="handoff-add">
+      <input type="text" id="handoff-new-id" placeholder="cmd:aria2c" spellcheck="false">
+      <button type="button" id="handoff-add-btn">Add</button>
+    </div>
+    <div class="handoff-status" id="handoff-status"></div>
+    <div class="handoff-hint">
+      One list, in order: the first handler that accepts a download gets it.
+      <code>uget</code> is built in and speaks uget-integrator's own
+      protocol. <code>cmd:aria2c</code> runs a program on your PATH with the
+      args you give it, and <code>ext:some@extension</code> asks another
+      extension that answers download messages. Args may use
+      <code>{url}</code> <code>{filename}</code> <code>{referer}</code>
+      <code>{ua}</code> and <code>{cookies}</code>.
+    </div>
+  </div>
+</div>
+<script src="lib/qrcode.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

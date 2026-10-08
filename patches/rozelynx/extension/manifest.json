@@ -1,0 +1,110 @@
+{
+  "manifest_version": 3,
+  "name": "RozeLynx Features",
+  "version": "1.0.72",
+  "description": "Portable features for RozeLynx browser by ByteWheel",
+  "author": "ByteWheel",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "rozelynx-features@bytewheel.org",
+      "strict_min_version": "128.0"
+    }
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "webNavigation",
+    "contextMenus",
+    "downloads",
+    "management",
+    "menus",
+    "alarms",
+    "notifications",
+    "clipboardWrite",
+    "scripting",
+    "nativeMessaging",
+    "webRequest",
+    "webRequestBlocking"
+  ],
+  "host_permissions": [
+    "*://*/*"
+  ],
+  "background": {
+    "scripts": [
+      "lib/feature-loader.js",
+      "background.js"
+    ]
+  },
+  "experiment_apis": {
+    "rozelynxPrefs": {
+      "schema": "lib/experiments/prefs-schema.json",
+      "parent": {
+        "scopes": [
+          "addon_parent"
+        ],
+        "script": "lib/experiments/prefs-api.js",
+        "paths": [
+          [
+            "rozelynxPrefs"
+          ]
+        ]
+      }
+    },
+    "rozelynxWindows": {
+      "schema": "lib/experiments/windows-schema.json",
+      "parent": {
+        "scopes": [
+          "addon_parent"
+        ],
+        "script": "lib/experiments/windows-api.js",
+        "paths": [
+          [
+            "rozelynxWindows"
+          ]
+        ]
+      }
+    },
+    "rozelynxDevtools": {
+      "schema": "lib/experiments/devtools-schema.json",
+      "parent": {
+        "scopes": [
+          "addon_parent"
+        ],
+        "script": "lib/experiments/devtools-api.js",
+        "paths": [
+          [
+            "rozelynxDevtools"
+          ]
+        ]
+      }
+    },
+    "rozelynxNetIface": {
+      "schema": "lib/experiments/netiface-schema.json",
+      "parent": {
+        "scopes": [
+          "addon_parent"
+        ],
+        "script": "lib/experiments/netiface-api.js",
+        "paths": [
+          [
+            "rozelynxNetIface"
+          ]
+        ]
+      }
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": false
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "64": "icons/icon64.png",
+    "128": "icons/icon128.png"
+  }
+}

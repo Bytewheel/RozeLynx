@@ -1,0 +1,57 @@
+RozeLynx netiface v14: session-restore hook — re-apply the per-tab interface
+binding from the SessionStore custom tab value ("rozelynxNetIface") in the
+parent process, synchronously, inside restoreTab().
+
+Why: the tab-layer binding is keyed by BrowsingContext::BrowserId() in the
+netiface component's runtime map, and every restored tab (undo-close via
+Ctrl+Shift+T / Recently Closed Tabs, startup session restore, closed-window
+restore) gets a FRESH BrowserId.  The RozeLynx Features extension re-applies
+the binding when it observes the new tab (tabs.onCreated/tabs.onUpdated), but
+as an MV3 event page it is typically suspended and wakes a beat too late:
+the restored document's history restore (queued at the end of restoreTab)
+opens its first TCP connections on the profile-default interface before the
+rebind lands, so a reopen-closed-tab visibly "reopens in the profile
+default".  Doing it here — before _sendRestoreHistory()/TabRestoreQueue run
+— beats the page load by construction; the extension's rebind becomes a
+benign no-op (its getEffective() equality check).
+
+The binding itself is written by the extension through
+SessionStore.setCustomTabValue(...) as JSON.stringify(String(iface)) and
+survives close/reopen through the closed-tab entry's extData (weakmap
+collect at onTabClose, TAB_CUSTOM_VALUES restore here).
+
+Best effort, version-agnostic (context anchors identical in 154-156):
+builds without the @bytewheel.org/netiface;1 component (USE=-net-iface)
+throw on the getService and skip through the catch; malformed/missing
+values are ignored.  Chrome globals Cc/Ci are already used by this module.
+
+--- a/browser/components/sessionstore/SessionStore.sys.mjs
++++ b/browser/components/sessionstore/SessionStore.sys.mjs
+@@ -6560,6 +6560,27 @@
+       TAB_CUSTOM_VALUES.delete(tab);
+     }
+ 
++    // RozeLynx netiface: apply a persisted per-tab interface binding to the
++    // fresh BrowserId BEFORE the content restore below can open the tab's
++    // first TCP connection (see patch header).  Best effort: no netiface
++    // component, no BrowserId or no persisted value => skip silently.
++    try {
++      const rozelynxRaw = tabData.extData && tabData.extData.rozelynxNetIface;
++      if (typeof rozelynxRaw == "string" && rozelynxRaw) {
++        const rozelynxIface = JSON.parse(rozelynxRaw);
++        if (typeof rozelynxIface == "string" && rozelynxIface) {
++          const bc = browser.browsingContext;
++          const top = bc ? (bc.top || bc) : null;
++          if (top && top.browserId) {
++            const svc = Cc["@bytewheel.org/netiface;1"].getService(
++              Ci.nsIRozeLynxNetIface
++            );
++            svc.setTabInterface(top.browserId, rozelynxIface);
++          }
++        }
++      }
++    } catch (e) {}
++
+     // Tab is now open.
+     delete tabData.closedAt;
+ 

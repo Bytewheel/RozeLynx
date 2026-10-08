@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open in RozeLynx</title>
+  <link rel="stylesheet" href="choose.css">
+</head>
+<body>
+  <main class="chooser">
+    <header class="chooser-header">
+      <h1>Open link in...</h1>
+      <p class="target-url" id="url-display"></p>
+    </header>
+
+    <form id="picker-form">
+      <div class="field">
+        <label for="profile-select">Profile</label>
+        <select id="profile-select"></select>
+        <span class="hint" id="profile-hint"></span>
+      </div>
+
+      <div class="field">
+        <label for="iface-select">Network interface</label>
+        <select id="iface-select">
+          <option value="">All interfaces (no binding)</option>
+        </select>
+        <span class="hint">Picking an interface binds the opened tab to it. "All interfaces" leaves the socket unbound, so it routes normally.</span>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="set-default">
+        <span>Also make this the profile's default interface on next start</span>
+      </label>
+
+      <p class="status" id="status"></p>
+
+      <div class="actions">
+        <button type="submit" id="open-btn" class="primary">Open</button>
+      </div>
+    </form>
+  </main>
+  <script src="choose.js"></script>
+</body>
+</html>

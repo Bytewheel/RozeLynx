@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RozeLynx: Network interface</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      margin: 0;
+      padding: 14px;
+      background: light-dark(#fbfbfb, #1c1b22);
+      color: light-dark(#15141a, #fbfbfe);
+    }
+    h1 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0 0 2px 0;
+    }
+    .current {
+      margin: 0 0 12px 0;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: light-dark(#f0f0f4, #2b2a33);
+      line-height: 1.5;
+    }
+    .current b { font-weight: 600; }
+    .current .note {
+      margin-top: 6px;
+      font-size: 12px;
+      color: light-dark(#5b5b66, #bfbfc9);
+    }
+    fieldset {
+      border: 1px solid light-dark(#cfcfd8, #42414d);
+      border-radius: 8px;
+      padding: 8px 10px 10px 10px;
+      margin: 0 0 12px 0;
+    }
+    legend { padding: 0 4px; }
+    label.iface {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      margin: 2px 0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    label.iface:hover { background: light-dark(#eaeaf0, #353342); }
+    label.iface input { margin: 0; flex: none; }
+    label.iface .name { font-weight: 600; }
+    label.iface .detail { color: light-dark(#5b5b66, #bfbfc9); font-size: 12px; }
+    label.iface.default {
+      border-top: 1px solid light-dark(#e0e0e6, #42414d);
+      border-radius: 0 0 6px 6px;
+      margin-top: 8px;
+    }
+    .status {
+      min-height: 18px;
+      margin: 0 0 10px 0;
+      font-size: 12px;
+      color: light-dark(#5b5b66, #bfbfc9);
+    }
+    .status.error { color: #e22850; }
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    button {
+      padding: 6px 14px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary {
+      background: #0060df;
+      color: #fff;
+    }
+    button.secondary {
+      background: transparent;
+      color: inherit;
+      border-color: light-dark(#cfcfd8, #42414d);
+    }
+  </style>
+</head>
+<body>
+  <h1>Bind tab to interface</h1>
+  <p class="current" id="current"></p>
+
+  <fieldset>
+    <legend>Network interface</legend>
+    <div id="iface-list"></div>
+  </fieldset>
+
+  <p class="status" id="status"></p>
+
+  <div class="actions">
+    <button type="button" id="cancel-btn" class="secondary">Cancel</button>
+    <button type="button" id="apply-btn" class="primary">Apply</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,248 @@
+diff --git a/browser/components/preferences/config/permissions-data.mjs b/browser/components/preferences/config/permissions-data.mjs
+index 8e0e6d5..6a937c5 100644
+--- a/browser/components/preferences/config/permissions-data.mjs
++++ b/browser/components/preferences/config/permissions-data.mjs
+@@ -63,6 +63,11 @@ Preferences.addAll([
+   { id: PREF_ADDON_RECOMMENDATIONS_ENABLED, type: "bool" },
+   { id: PREF_UPLOAD_ENABLED, type: "bool" },
+   { id: "datareporting.usage.uploadEnabled", type: "bool" },
++
++  { id: "browser.eme.ui.enabled", type: "bool" },
++  { id: "librewolf.webgl.prompt", type: "bool" },
++  { id: "media.eme.require-app-approval", type: "bool" },
++  { id: "webgl.disabled", type: "bool" },
+ ]);
+ 
+ /**
+@@ -490,6 +495,45 @@ Preferences.addSetting(
+   })
+ );
+ 
++Preferences.addSetting({
++  id: "emeEnabled",
++  pref: "media.eme.enabled",
++});
++Preferences.addSetting({
++  id: "emePermissionPromptEnabled",
++  pref: "media.eme.require-app-approval",
++});
++Preferences.addSetting({
++  id: "emeUIEnabled",
++  pref: "browser.eme.ui.enabled",
++});
++Preferences.addSetting({
++  id: "emeSettingsButton",
++  onUserClick: () => showPermissionExceptions({ permissionType: "media-key-system-access" }),
++  deps: ["emeEnabled", "emePermissionPromptEnabled", "emeUIEnabled"],
++  visible: deps => {
++    return deps.emeEnabled.value && deps.emePermissionPromptEnabled.value && deps.emeUIEnabled.value;
++  },
++});
++
++Preferences.addSetting({
++  id: "webglPermissionPromptEnabled",
++  pref: "librewolf.webgl.prompt",
++});
++Preferences.addSetting({
++  id: "webglDisabled",
++  pref: "webgl.disabled",
++});
++Preferences.addSetting({
++  id: "webglSettingsButton",
++  onUserClick: () => showPermissionExceptions({ permissionType: "webgl" }),
++  deps: ["webglPermissionPromptEnabled", "webglDisabled"],
++  visible: deps => {
++    return deps.webglPermissionPromptEnabled.value && !deps.webglDisabled.value;
++  },
++});
++
++
+ SettingGroupManager.registerGroups({
+   permissions: {
+     id: "permissions",
+@@ -600,6 +644,26 @@ SettingGroupManager.registerGroups({
+                 "permissions-remove.label,permissions-remove-all.label,permissions-site-xr-window2.title,permissions-site-xr-desc,permissions-site-xr-disable-label,permissions-site-xr-disable-desc,",
+             },
+           },
++          {
++            id: "webglSettingsButton",
++            control: "moz-box-button",
++            l10nId: "permissions-webgl2",
++            controlAttrs: {
++              ".iconSrc": "chrome://browser/skin/notification-icons/webgl.svg",
++              "search-l10n-ids":
++                "permissions-remove.label,permissions-remove-all.label,permissions-site-webgl-window2.title,permissions-site-webgl-desc",
++            },
++          },
++          {
++            id: "emeSettingsButton",
++            control: "moz-box-button",
++            l10nId: "permissions-eme2",
++            controlAttrs: {
++              ".iconSrc": "chrome://browser/skin/drm-icon.svg",
++              "search-l10n-ids":
++                "permissions-remove.label,permissions-remove-all.label,permissions-site-eme-window2.title,permissions-site-eme-desc,permissions-site-eme-disable-label,permissions-site-eme-disable-desc",
++            },
++          },
+         ],
+       },
+       {
+
+
+diff --git a/browser/base/content/navigator-toolbox.inc.xhtml b/browser/base/content/navigator-toolbox.inc.xhtml
+index b23fc2bc15eb..b601c78e213c 100644
+--- a/browser/base/content/navigator-toolbox.inc.xhtml
++++ b/browser/base/content/navigator-toolbox.inc.xhtml
+@@ -266,6 +266,10 @@
+                       data-l10n-id="urlbar-autoplay-media-blocked"/>
+                 <image data-permission-id="canvas" class="blocked-permission-icon canvas-icon" role="button"
+                       data-l10n-id="urlbar-canvas-blocked"/>
++                <image data-permission-id="media-key-system-access" class="blocked-permission-icon drm-icon" role="button"
++                      data-l10n-id="urlbar-eme-blocked"/>
++                <image data-permission-id="webgl" class="blocked-permission-icon webgl-icon" role="button"
++                      data-l10n-id="urlbar-webgl-blocked"/>
+                 <image data-permission-id="midi" class="blocked-permission-icon midi-icon" role="button"
+                       data-l10n-id="urlbar-midi-blocked"/>
+                 <image data-permission-id="serial" class="blocked-permission-icon serial-icon" role="button"
+@@ -297,6 +301,8 @@
+                       data-l10n-id="urlbar-addons-notification-anchor"/>
+               <image id="canvas-notification-icon" class="notification-anchor-icon" role="button"
+                       data-l10n-id="urlbar-canvas-notification-anchor"/>
++              <image id="webgl-notification-icon" class="notification-anchor-icon" role="button"
++                      data-l10n-id="urlbar-webgl-notification-anchor"/>
+               <image id="indexedDB-notification-icon" class="notification-anchor-icon indexedDB-icon" role="button"
+                       data-l10n-id="urlbar-indexed-db-notification-anchor"/>
+               <image id="password-notification-icon" class="notification-anchor-icon" role="button"
+
+
+diff --git a/browser/components/preferences/dialogs/sitePermissions.js b/browser/components/preferences/dialogs/sitePermissions.js
+index f8d0e2ce84f0..6d8d01a94542 100644
+--- a/browser/components/preferences/dialogs/sitePermissions.js
++++ b/browser/components/preferences/dialogs/sitePermissions.js
+@@ -33,6 +33,16 @@ const sitePermissionsL10n = {
+     disableLabel: "permissions-site-xr-disable-label",
+     disableDescription: "permissions-site-xr-disable-desc",
+   },
++  "media-key-system-access": {
++    window: "permissions-site-eme-window2",
++    description: "permissions-site-eme-desc",
++    disableLabel: "permissions-site-eme-disable-label",
++    disableDescription: "permissions-site-eme-disable-desc",
++  },
++  webgl: {
++    window: "permissions-site-webgl-window2",
++    description: "permissions-site-webgl-desc",
++  },
+   camera: {
+     window: "permissions-site-camera-window2",
+     description: "permissions-site-camera-desc",
+
+
+diff --git a/browser/modules/moz.build b/browser/modules/moz.build
+--- a/browser/modules/moz.build
++++ b/browser/modules/moz.build
+@@ -150,10 +150,12 @@
+ MOZ_SRC_FILES += [
+     "CanvasPermissionPromptHelper.sys.mjs",
+     "ContextId.sys.mjs",
++    "EMEPermissionPrompt.sys.mjs",
+     "ObserverForwarder.sys.mjs",
+     "PrivateBrowsingUI.sys.mjs",
+     "SerialDeviceSharingHelper.sys.mjs",
++    "WebGLPermissionPromptHelper.sys.mjs",
+ ]
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+
+diff --git a/browser/modules/SitePermissions.sys.mjs b/browser/modules/SitePermissions.sys.mjs
+index 91b2aa7deeff..114fd428a9f6 100644
+--- a/browser/modules/SitePermissions.sys.mjs
++++ b/browser/modules/SitePermissions.sys.mjs
+@@ -1043,6 +1043,21 @@ let gPermissions = {
+       },
+     },
+ 
++    "media-key-system-access": {
++      labelID: "eme",
++      exactHostMatch: true,
++      get disabled() {
++        return !SitePermissions.emeEnabled || !SitePermissions.emePermissionPromptEnabled || !SitePermissions.emeUIEnabled;
++      },
++    },
++
++    webgl: {
++//      exactHostMatch: true,
++      get disabled() {
++        return !SitePermissions.webglPermissionPromptEnabled || SitePermissions.webglDisabled;
++      },
++    },
++
+     midi: {
+       exactHostMatch: true,
+       get disabled() {
+@@ -1076,6 +1091,42 @@ let gPermissions = {
+   },
+ };
+ 
++XPCOMUtils.defineLazyPreferenceGetter(
++  SitePermissions,
++  "emeEnabled",
++  "media.eme.enabled",
++  false,
++  SitePermissions.invalidatePermissionList.bind(SitePermissions)
++);
++XPCOMUtils.defineLazyPreferenceGetter(
++  SitePermissions,
++  "emePermissionPromptEnabled",
++  "media.eme.require-app-approval",
++  true,
++  SitePermissions.invalidatePermissionList.bind(SitePermissions)
++);
++XPCOMUtils.defineLazyPreferenceGetter(
++  SitePermissions,
++  "emeUIEnabled",
++  "browser.eme.ui.enabled",
++  true,
++  SitePermissions.invalidatePermissionList.bind(SitePermissions)
++);
++XPCOMUtils.defineLazyPreferenceGetter(
++  SitePermissions,
++  "webglPermissionPromptEnabled",
++  "librewolf.webgl.prompt",
++  true,
++  SitePermissions.invalidatePermissionList.bind(SitePermissions)
++);
++XPCOMUtils.defineLazyPreferenceGetter(
++  SitePermissions,
++  "webglDisabled",
++  "webgl.disabled",
++  false,
++  SitePermissions.invalidatePermissionList.bind(SitePermissions)
++);
++
+ SitePermissions.midiPermissionEnabled = Services.prefs.getBoolPref(
+   "dom.webmidi.enabled"
+ );
+
+
+diff --git a/browser/themes/shared/preferences/privacy.css b/browser/themes/shared/preferences/privacy.css
+index e81a1e037e03..3d9021f3448e 100644
+--- a/browser/themes/shared/preferences/privacy.css
++++ b/browser/themes/shared/preferences/privacy.css
+@@ -37,6 +37,14 @@
+   list-style-image: url(chrome://browser/skin/notification-icons/xr.svg);
+ }
+ 
++.drm-icon {
++  list-style-image: url(chrome://browser/skin/drm-icon.svg);
++}
++
++.webgl-icon {
++  list-style-image: url(chrome://browser/skin/notification-icons/webgl.svg);
++}
++
+ .camera-icon {
+   list-style-image: url(chrome://browser/skin/notification-icons/camera.svg);
+ }
+
+

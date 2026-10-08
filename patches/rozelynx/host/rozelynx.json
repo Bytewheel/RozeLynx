@@ -1,0 +1,7 @@
+{
+  "name": "rozelynx_host",
+  "description": "RozeLynx external browser launcher",
+  "path": "@PATH@",
+  "type": "stdio",
+  "allowed_extensions": ["rozelynx-features@bytewheel.org"]
+}
