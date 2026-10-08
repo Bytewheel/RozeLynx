@@ -1,0 +1,16 @@
+# RozeLynx — licensing
+
+RozeLynx and its build machinery are free software; the complete
+license texts are in [licenses/](licenses/).
+
+- Mozilla Public License 2.0 (licenses/MPL-2.0): the browser patch
+  tree — the LibreWolf privacy patches and the RozeLynx branding,
+  C++ components, extension and host sources — and the built RozeLynx
+  browser (Firefox is MPL-2.0).
+- GNU General Public License 2.0 (licenses/GPL-2): the Gentoo ebuild
+  template (`gentoo/firefox-template.ebuild`) and the Gentoo packaging
+  in the ByteWheel overlay (https://github.com/ByteWheel/gentoo-overlay),
+  per the Gentoo ebuild headers.
+- GNU Lesser General Public License 2.1 (licenses/LGPL-2.1):
+  LGPL-2.1-licensed components of the built browser, per the ebuild's
+  LICENSE="MPL-2.0 GPL-2 LGPL-2.1".

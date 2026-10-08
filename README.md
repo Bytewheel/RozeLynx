@@ -20,10 +20,11 @@ Linux only, for now. PRs welcome.
 
 This is the RozeLynx browser repository: the complete patch set that
 turns Firefox into RozeLynx, plus the build machinery to apply it.
-Development happens in the hawksnest Gentoo overlay; this repo is a
-published mirror of its patch tree. Run `./sync-from-hawksnest.sh` to
+Development happens in the ByteWheel Gentoo overlay
+(https://github.com/ByteWheel/gentoo-overlay); this repo is a
+published mirror of its patch tree. Run `./sync-from-bytewheel.sh` to
 refresh it after changes land in the overlay (or pass the overlay path
-as an argument; `/var/db/repos/hawksnest` is picked up as a fallback).
+as an argument; `/var/db/repos/bytewheel` is picked up as a fallback).
 
 Layout:
 
@@ -39,7 +40,7 @@ Layout:
   Gentoo build is regenerated from
 - `rozelynx-distro-build.sh` + `rozelynx-distro-versions.conf` — the
   distro-agnostic build and its pinned sources
-- `sync-from-hawksnest.sh` — the mirror refresh script
+- `sync-from-bytewheel.sh` — the mirror refresh script
 
 The LibreWolf patches here are vendored and rebased per Firefox
 version (the pinned upstream LibreWolf checkout the build fetches is
@@ -52,7 +53,7 @@ patch.
 There are two supported ways to build RozeLynx: the distro-agnostic
 build script in this repo (works on any Linux distribution, packages
 as tarball/AppImage/Flatpak/snap), and the original Gentoo ebuild in
-the hawksnest overlay.
+the ByteWheel overlay (https://github.com/ByteWheel/gentoo-overlay).
 
 ### Requirements
 
@@ -104,10 +105,16 @@ Notes:
 ### Gentoo (the ebuild)
 
 RozeLynx is built on Gentoo through the patched `www-client/firefox`
-ebuild, maintained in the hawksnest overlay and regenerated from
+ebuild, maintained in the ByteWheel overlay
+(https://github.com/ByteWheel/gentoo-overlay) and regenerated from
 `gentoo/firefox-template.ebuild`:
 
 ```sh
+# add the overlay:
+eselect repository add bytewheel git https://github.com/ByteWheel/gentoo-overlay.git
+# (or clone https://github.com/ByteWheel/gentoo-overlay.git to
+#  /var/db/repos/bytewheel with a matching repos.conf entry)
+
 emerge --ask www-client/firefox
 ```
 
