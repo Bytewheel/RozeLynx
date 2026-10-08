@@ -341,6 +341,8 @@ export MOZBUILD_STATE_PATH="${MACH_STATE}"
 export CARGO_BUILD_JOBS="${JOBS}"
 export MOZ_MAKE_FLAGS="-j${JOBS}"
 export LC_ALL=C
+# mirrors the ebuild's RUST_MIN_VER for the pinned Firefox version
+: "${ROZELYNX_RUST_MIN_VER:=1.90.0}"
 is_glibc || warn "non-glibc libc detected; the ebuild sets RUST_TARGET overrides for musl - this script assumes glibc"
 
 # ---------------------------------------------------------------------------
@@ -376,6 +378,21 @@ sha_check() {  # sha_check FILE sha512|sha256 VALUE
     got="$("${bin}" "${file}" | awk '{print $1}')"
     [[ "${got}" == "${want}" ]] || die "checksum mismatch for ${file}: got ${got}, want ${want}"
     log "checksum ok: $(basename "${file}")"
+}
+
+clone_ref() {  # clone_ref REPO REF DIR LABEL - shallow fetch of a tag, branch or commit SHA
+    local repo="$1" ref="$2" dir="$3" label="$4"
+    if [[ -d ${dir}/.git ]]; then
+        log "  ${label} reference checkout: ${dir} @ $(git -C "${dir}" rev-parse --short=12 HEAD 2>/dev/null || echo "${ref}")"
+        return 0
+    fi
+    log "cloning ${label} @ ${ref} (reference)"
+    [[ ${OFFLINE} == 1 ]] && die "offline mode: cannot clone ${repo}"
+    git init -q "${dir}"
+    git -C "${dir}" remote add origin "${repo}"
+    git -C "${dir}" fetch --depth 1 origin "${ref}" \
+        || { rm -rf "${dir}"; die "git fetch of ${ref} from ${repo} failed - bad ${label} pin? (edit rozelynx-distro-versions.conf)"; }
+    git -C "${dir}" checkout --detach FETCH_HEAD
 }
 
 # ---------------------------------------------------------------------------
@@ -419,16 +436,11 @@ stage_fetch() {
     # LibreWolf source - pinned reference checkout.  The LibreWolf patches
     # applied below come from THIS overlay (vendored + rebased per Firefox
     # version); the upstream checkout is kept for reference, diffing and
-    # rebasing sessions.
+    # rebasing sessions.  The pin is a commit SHA because upstream tags
+    # lag their own releases (see rozelynx-distro-versions.conf).
     if [[ -n ${LIBREWOLF_REF} ]]; then
-        local lw_dir="${DOWNLOADS}/librewolf-source"
-        if [[ ! -d ${lw_dir}/.git ]]; then
-            log "cloning LibreWolf source @ ${LIBREWOLF_REF} (reference)"
-            [[ ${OFFLINE} == 1 ]] && die "offline mode: cannot clone ${LIBREWOLF_REPO}"
-            git clone --depth 1 --branch "${LIBREWOLF_REF}" "${LIBREWOLF_REPO}" "${lw_dir}" \
-                || die "git clone failed (bad LIBREWOLF_REF='${LIBREWOLF_REF}'? override with --librewolf-ref)"
-        fi
-        log "  LibreWolf reference checkout: ${lw_dir} ($(cd "${lw_dir}" && git describe --tags --always 2>/dev/null || echo "${LIBREWOLF_REF}"))"
+        clone_ref "${LIBREWOLF_REPO}" "${LIBREWOLF_REF}" \
+            "${DOWNLOADS}/librewolf-source" "LibreWolf"
     fi
 
     # Floorp source - pinned REFERENCE ONLY.  Floorp features (PWA/SSB,
@@ -436,14 +448,9 @@ stage_fetch() {
     # extension + C++ code in this overlay; nothing from the Floorp tree
     # is applied as a patch.  Kept for reference when porting more.
     if [[ -n ${FLOORP_REF} ]]; then
-        local fp_dir="${DOWNLOADS}/floorp-source"
-        if [[ ! -d ${fp_dir}/.git ]]; then
-            log "cloning Floorp source @ ${FLOORP_REF} (reference only, not a patch source)"
-            [[ ${OFFLINE} == 1 ]] && die "offline mode: cannot clone ${FLOORP_REPO}"
-            git clone --depth 1 --branch "${FLOORP_REF}" "${FLOORP_REPO}" "${fp_dir}" \
-                || die "git clone failed (bad FLOORP_REF='${FLOORP_REF}'? override with --floorp-ref)"
-        fi
-        log "  Floorp reference checkout: ${fp_dir} ($(cd "${fp_dir}" && git describe --tags --always 2>/dev/null || echo "${FLOORP_REF}")) - features already ported; NOT applied"
+        clone_ref "${FLOORP_REPO}" "${FLOORP_REF}" \
+            "${DOWNLOADS}/floorp-source" "Floorp"
+        log "  Floorp is reference-only - features are already ported; nothing from it is applied"
     fi
 }
 
@@ -913,6 +920,15 @@ stage_configure() {
         warn "USE=clang is on but clang is not installed - falling back to the system compiler"
         USE[clang]=0
     fi
+    # rust minimum (mirrors the ebuild's RUST_MIN_VER; override with
+    # ROZELYNX_RUST_MIN_VER if the pinned Firefox needs something else)
+    local _rustc_ver
+    if ! command -v rustc >/dev/null 2>&1; then
+        die "rustc not found (RozeLynx ${FIREFOX_VERSION} needs rustc >= ${ROZELYNX_RUST_MIN_VER})"
+    fi
+    _rustc_ver="$(rustc --version 2>/dev/null | awk '{print $2}')"
+    ver_ge "${_rustc_ver}" "${ROZELYNX_RUST_MIN_VER}" \
+        || die "rustc ${_rustc_ver} is too old: RozeLynx ${FIREFOX_VERSION} needs rustc >= ${ROZELYNX_RUST_MIN_VER} (override with ROZELYNX_RUST_MIN_VER if you know better)"
     if use clang; then
         export CC=clang CXX=clang++
         export AR=llvm-ar NM=llvm-nm RANLIB=llvm-ranlib
@@ -1449,7 +1465,7 @@ pkg_appimage() {
     else
         local dl="${DOWNLOADS}/appimagetool-${ARCH}.AppImage"
         fetch_url \
-            "https://github.com/AppImage/appimagetool/releases/download/appimagetool-${APPIMAGETOOL_TAG}/appimagetool-${ARCH}.AppImage" \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_TAG}/appimagetool-${ARCH}.AppImage" \
             "${dl}"
         chmod +x "${dl}"
         tool="${dl}"
