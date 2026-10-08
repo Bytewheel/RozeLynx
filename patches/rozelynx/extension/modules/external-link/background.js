@@ -107,9 +107,15 @@
       return browser.tabs.create({ url: url }).then(function(tab) {
         return bindTab(tab && tab.id, iface).then(function() {
           // Empty iface == all interfaces, and that is a legitimate profile
-          // default, so this is not gated on a non-empty value.
+          // default, so this is not gated on a non-empty value. The '*'
+          // sentinel is the PER-TAB flavour of the same thing: ResolveForLoad
+          // translates it back to empty in the TAB layer only, so it must
+          // never be written as the profile default -- the profile layer
+          // would hand it to SO_BINDTODEVICE verbatim and refuse every bind.
+          // Its profile-default equivalent is the empty pref.
           if (setDefault) {
-            return setCurrentProfileDefault(iface, current).then(function() {
+            var profileIface = iface === '*' ? '' : iface;
+            return setCurrentProfileDefault(profileIface, current).then(function() {
               return { mode: 'tab', tabId: tab && tab.id };
             });
           }

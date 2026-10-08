@@ -1623,7 +1623,7 @@ summary: RozeLynx Web Browser
 description: |
   RozeLynx: a Firefox-based browser by ByteWheel with Floorp-derived
   features and LibreWolf-style privacy hardening.  Built from pinned
-  sources by the hawksnest overlay distro-agnostic build script.
+  sources by the ByteWheel overlay distro-agnostic build script.
 arch: ${SNAP_ARCH}
 grade: stable
 confinement: strict

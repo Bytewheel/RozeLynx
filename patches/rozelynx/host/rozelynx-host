@@ -429,8 +429,15 @@ def do_open_rozelynx_profile(msg):
     # default a fresh profile starts with, so it must be persistable too -- the
     # alternative is a default that can be set once and never taken back.
     if set_default:
+        # '*' is the PER-TAB all-interfaces sentinel: the browser translates it
+        # back to empty in the tab layer of ResolveForLoad only, so persisting
+        # it as the profile default would hand it to SO_BINDTODEVICE verbatim
+        # and refuse every bind in that profile. The profile default's "all
+        # interfaces" is the empty pref. The tab binding itself still receives
+        # the sentinel through --external-link-iface below.
+        profile_iface = '' if iface == '*' else iface
         if not write_profile_pref(profile_dir, 'rozelynx.netiface.profile',
-                                  iface):
+                                  profile_iface):
             return {'ok': False,
                     'error': 'could not write profile default pref'}
     exe = shutil.which('rozelynx') or '/usr/bin/rozelynx'

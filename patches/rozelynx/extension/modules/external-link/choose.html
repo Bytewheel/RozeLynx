@@ -23,9 +23,9 @@
       <div class="field">
         <label for="iface-select">Network interface</label>
         <select id="iface-select">
-          <option value="">All interfaces (no binding)</option>
+          <option value="">Use profile default</option>
         </select>
-        <span class="hint">Picking an interface binds the opened tab to it. "All interfaces" leaves the socket unbound, so it routes normally.</span>
+        <span class="hint">Picking an interface binds the opened tab to it. "All interfaces" leaves this tab's socket unbound, overriding the profile default. "Use profile default" adds no per-tab binding, so the profile's default interface decides.</span>
       </div>
 
       <label class="check">

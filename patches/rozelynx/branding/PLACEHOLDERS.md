@@ -313,7 +313,7 @@ the source, not the flags.
 ### Raster artwork added 2026-09-30
 
 Three slots now take new raster artwork, all from
-`~/Documents/hawksnestsoftware/marketing/RozeLynx/`. Re-drop at any
+`~/Documents/ByteWheel/marketing/RozeLynx/`. Re-drop at any
 resolution; the build resizes and centre-crops.
 
 | Source | Slot | Notes |
@@ -351,6 +351,7 @@ Firefox artwork.
 | `content/about.png`, `content/about-logo.png`, `content/about-logo@2x.png` | `main/no-text.png` | 192x192, centre crop |
 | `about.png` | `main/no-text.png` | 192x192, centre crop |
 | `content/about-logo-private.png`, `content/about-logo-private@2x.png` | `private-browsing.png` (**art**, landscape 707x459, fully opaque) | 192x192 **centre crop**, which keeps 459x459 and discards about 35% of the width — by far the most aggressive crop of any slot here. `aboutPrivateBrowsing.css` sets `.logo` to `var(--size-image-xxlarge)` in both axes, so the slot really is square; a source that should not lose its edges wants to be square. Falls back to `dark/no-text.png`. |
+| `content/private-wallpaper.png` | `private-background.png` (**art**, 1314x1197, the marketing `pounce-thorns.jpg` as a `-strip` PNG) | plain `cp` — no crop, no resize. The private page's own stylesheet (the `aboutPrivateBrowsing.css` append in the same block) scales it `cover`, so the source ships at native resolution and the window crop happens at paint time. Registered in `content/jar.mn` alongside the newtab wallpaper, which is an allowlist: a slot missing from it is silently dropped and its `chrome://` URL 404s. |
 | `content/about-logo.svg` | `main/no-text.png` (*placeholder*) or `vector/about-logo.png` | 512x512 canvas, 960px embed |
 | `themes/shared/addons/extensions-panel-empty.svg` | `vector/extensions-panel-empty.png` (**art**) or `main/no-text.png` | 177x132 slot, 354x264 raster (2x) |
 | `themes/shared/addons/extensions-panel-empty-onboarding.svg` | `main/no-text.png` (*placeholder*) or `vector/extensions-panel-empty-onboarding.png` | 329x162 slot, 329x162 raster |

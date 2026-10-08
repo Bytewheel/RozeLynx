@@ -110,22 +110,35 @@
         currentDefault = browser.rozelynxNetIface.getProfileInterface() || '';
       }
     } catch (e) {}
-    // Empty is not "inherit the profile": an empty bindIface is what every one of
-    // the sixteen consumers in net-iface-necko.patch guards on with !IsEmpty(), so
-    // it means the socket is never SO_BINDTODEVICE'd and traffic takes the normal
-    // route -- i.e. all interfaces. It is the default for a fresh profile, so it
-    // has to be selectable again once a real interface has been chosen, both for
-    // this one tab and as the profile default.
-    ifaceSelect.appendChild(option('', 'All interfaces (no binding)', {
-      selected: currentDefault === '',
-    }));
+    var matched = false;
     interfaces.forEach(function(ifc) {
       var label = ifc.displayName || ifc.name;
       if (ifc.type) label += ' (' + ifc.type + ')';
+      var isDefault = ifc.name === currentDefault;
+      if (isDefault) matched = true;
       ifaceSelect.appendChild(option(ifc.name, label, {
-        selected: ifc.name === currentDefault,
+        selected: isDefault,
       }));
     });
+    // A REAL per-tab binding, the same '*' sentinel the chip picker stores:
+    // setAssignment keeps it, ResolveForLoad translates it back to empty in
+    // the tab layer, and the tab then routes unbound while still overriding
+    // the profile default. (Before this, the row carried '' -- which is NOT
+    // that: bindTab no-ops on empty, so the tab inherited the profile
+    // default, whatever that was. The option that replaced "(profile
+    // default)" in 8ab07e5c was inheritance all along, mislabelled.)
+    ifaceSelect.appendChild(option('*', 'All interfaces (no binding)'));
+    // The inheritance row, restored at the very bottom to match the chip
+    // picker, whose "(profile default)" row sits last too: no per-tab
+    // binding at all, so the opened tab inherits the profile default (and
+    // when that default is empty, that is all interfaces as well). Selected
+    // whenever no interface matched -- an empty profile default, or one
+    // naming an interface this list does not carry (a stale pref) --
+    // because inheriting is the safe fallback the old "(profile default)"
+    // row used to provide.
+    ifaceSelect.appendChild(option('', 'Use profile default', {
+      selected: !matched,
+    }));
   }
 
   function loadProfiles() {
@@ -203,7 +216,10 @@
     var profile = profileSelect.value;
     var iface = ifaceSelect.value || '';
     // Deliberately not gated on a non-empty iface: "all interfaces" is a real,
-    // selectable default and must be settable as the profile default too.
+    // selectable default and must be settable as the profile default too. A
+    // '*' iface is the per-tab all-interfaces sentinel and passes through as
+    // the tab binding; the background translates it to the empty pref before
+    // writing the profile default.
     var setDefault = setDefaultBox.checked;
 
     if (!profile) {
