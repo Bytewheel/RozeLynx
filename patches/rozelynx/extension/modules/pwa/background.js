@@ -1494,6 +1494,65 @@
           }
         })();
         return true;
+      // ── Security settings (synthetic right-click menu) ──────────────
+      // The canvas data toggle acts on the ORIGIN the clicking page sent
+      // (a PWA is a fixed origin, so per-origin IS per-app) and is offered
+      // only inside PWA windows: an ordinary browsing window must not grow
+      // a canvas grant entry. isPWAWindow answers the same registry
+      // question is-popup uses, after the same reload a cold event page
+      // needs. The {ok, data} envelope is what the menu probes degrade
+      // on: a build without the rozelynxSecurity experiment answers
+      // api:false rather than throwing, and the menu hides its entry.
+      case 'security-state':
+        (async function() {
+          try {
+            if (!sender.tab || !sender.tab.windowId) {
+              sendResponse({ ok: true, data: { pwaWindow: false } });
+              return;
+            }
+            await PWAWindows.load();
+            if (!PWAWindows.isPWAWindow(sender.tab.windowId)) {
+              sendResponse({ ok: true, data: { pwaWindow: false } });
+              return;
+            }
+            if (typeof browser.rozelynxSecurity === 'undefined') {
+              sendResponse({ ok: true, data: { pwaWindow: true, api: false, canvasEnabled: null } });
+              return;
+            }
+            const origin = (message.data && String(message.data.origin)) || '';
+            const st = await browser.rozelynxSecurity.getCanvasData(origin);
+            if (!st || !st.ok) {
+              sendResponse({ ok: true, data: { pwaWindow: true, api: true, canvasEnabled: null } });
+              return;
+            }
+            sendResponse({ ok: true, data: {
+              pwaWindow: true, api: true, canvasEnabled: !!st.enabled,
+            } });
+          } catch (e) {
+            sendResponse({ ok: false, error: e.message });
+          }
+        })();
+        return true;
+      case 'set-canvas':
+        (async function() {
+          try {
+            const data = message.data || {};
+            if (typeof browser.rozelynxSecurity === 'undefined') {
+              sendResponse({ ok: false, error: 'security API unavailable' });
+              return;
+            }
+            const res = await browser.rozelynxSecurity.setCanvasData(
+              String(data.origin || ''), !!data.enable);
+            if (!res || !res.ok) {
+              sendResponse({ ok: false, error: (res && res.error) || 'setCanvasData failed' });
+              return;
+            }
+            sendResponse({ ok: true, data: { canvasEnabled: !!data.enable } });
+          } catch (e) {
+            sendResponse({ ok: false, error: e.message });
+          }
+        })();
+        return true;
       case 'detect':
         if (sender.tab) {
           browser.tabs.executeScript(sender.tab.id, {

@@ -1,0 +1,35 @@
+[
+  {
+    "namespace": "rozelynxSecurity",
+    "functions": [
+      {
+        "name": "setCanvasData",
+        "type": "function",
+        "async": true,
+        "description": "Grant or revoke the canvas site permission for an origin. When granted, HTML5 canvas data extraction (toDataURL / toBlob / getImageData) returns real pixels for that origin instead of fingerprint-randomized noise.",
+        "parameters": [
+          {
+            "name": "origin",
+            "type": "string"
+          },
+          {
+            "name": "enable",
+            "type": "boolean"
+          }
+        ]
+      },
+      {
+        "name": "getCanvasData",
+        "type": "function",
+        "async": true,
+        "description": "Read whether the canvas site permission is currently allowed for an origin.",
+        "parameters": [
+          {
+            "name": "origin",
+            "type": "string"
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -47,6 +47,11 @@
   var pageHandledContext = false;
   // tri-state: null = not answered yet, true/false = netiface module present
   var netifaceAvailable = null;
+  // Security settings for THIS window, from the pwa module's
+  // security-state action. null = not answered yet, not a PWA window, or
+  // no pwa module / security API in this build - every one of those
+  // means the menu grows no Security section.
+  var securitySettings = null;
 
   function markCtx(msg) {
     try {
@@ -912,6 +917,58 @@
   }
 
   // -------------------------------------------------------------------------
+  // Security settings entry: HTML5 canvas data for THIS PWA window.
+  //
+  // Fingerprinting protection spoofs canvas data (toDataURL / toBlob /
+  // getImageData return noise) unless the "canvas" site permission is
+  // allowed for the origin - and a PWA is a fixed origin, so the toggle
+  // is per-app by construction. Both halves of it have to live in the
+  // parent: the permission manager is XPCOM, and the PWA-window gate
+  // (an ordinary browsing window must not grow a canvas grant entry) is
+  // the pwa background's registry, the same one is-popup answers from.
+  // So this only sends messages, exactly like the netiface entry above.
+  // -------------------------------------------------------------------------
+  function probeSecurity() {
+    return browser.runtime.sendMessage({
+      module: 'pwa', action: 'security-state',
+      data: { origin: window.location.origin }
+    }).then(function(resp) {
+      if (resp && resp.ok && resp.data && resp.data.pwaWindow) {
+        securitySettings = { canvas: !!resp.data.canvasEnabled };
+      } else {
+        securitySettings = null;
+      }
+    }).catch(function() {
+      // No pwa module in this build (nothing answers), or the message
+      // could not be delivered: either way there is no Security section.
+      securitySettings = null;
+    });
+  }
+
+  function toggleCanvasData() {
+    var next = !(securitySettings && securitySettings.canvas);
+    browser.runtime.sendMessage({
+      module: 'pwa', action: 'set-canvas',
+      data: { origin: window.location.origin, enable: next }
+    }).then(function(resp) {
+      if (resp && resp.ok && resp.data) {
+        // Keep the cached state in step with the permission manager, so
+        // the next menu open shows the toggle where it now is without
+        // waiting for another probe round-trip.
+        securitySettings = { canvas: !!resp.data.canvasEnabled };
+        showToast(resp.data.canvasEnabled
+          ? 'HTML5 canvas data enabled for this app'
+          : 'HTML5 canvas data revoked for this app');
+      } else {
+        showToast('Canvas toggle unavailable: ' +
+          ((resp && resp.error) || 'no response from the pwa module'));
+      }
+    }).catch(function() {
+      showToast('Canvas toggle needs a pwa build of RozeLynx');
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Menu item construction (context-aware, mirroring nsContextMenu)
   // -------------------------------------------------------------------------
   function getMenuContext() {
@@ -1078,6 +1135,21 @@
     // own, so it needs no separator of its own any more.
     if (netifaceAvailable !== false) {
       items.push({ label: 'Bind Network Interface…', fn: openNetifacePicker });
+    }
+
+    // Security settings, only in PWA windows: securitySettings is only
+    // ever non-null in one (the probe nulls itself for every other
+    // answer - no pwa module, no security API, not a PWA window). The
+    // canvas item carries its state as a leading check mark because the
+    // synthetic menu has no native checkbox row; the group header is
+    // where the next per-window security toggle goes.
+    if (securitySettings) {
+      items.push({ group: 'Security settings' });
+      items.push({
+        label: (securitySettings.canvas ? '\u2713 ' : '') +
+               'Allow HTML5 canvas data (this app)',
+        fn: toggleCanvasData,
+      });
     }
 
     return items;
@@ -1374,6 +1446,7 @@
 
   loadConfig();
   probeNetiface();
+  probeSecurity();
 
   // Dismiss the custom menu on any click outside it, Escape, or scroll
   document.addEventListener('mousedown', function(e) {

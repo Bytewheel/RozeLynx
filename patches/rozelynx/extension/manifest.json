@@ -91,6 +91,20 @@
           ]
         ]
       }
+    },
+    "rozelynxSecurity": {
+      "schema": "lib/experiments/security-schema.json",
+      "parent": {
+        "scopes": [
+          "addon_parent"
+        ],
+        "script": "lib/experiments/security-api.js",
+        "paths": [
+          [
+            "rozelynxSecurity"
+          ]
+        ]
+      }
     }
   },
   "content_security_policy": {
