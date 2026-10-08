@@ -1,5 +1,5 @@
 pkgbase = rozelynx-bin
-	pkgdesc = RozeLynx Web Browser: Firefox fork with LibreWolf privacy patches and per-tab network interface binding (binary release)
+	pkgdesc = RozeLynx Web Browser: Firefox fork with LibreWolf privacy patches and per-tab network interface binding (binary release; Wayland-only builds - build rozelynx-git for X11/XWayland)
 	pkgver = 156.0.1
 	pkgrel = 1
 	url = https://bytewheel.org/rozelynx
@@ -48,7 +48,7 @@ pkgbase = rozelynx-bin
 	provides = rozelynx=156.0.1
 	conflicts = rozelynx
 	source = https://github.com/Bytewheel/RozeLynx/releases/download/v156.0.1/rozelynx-156.0.1-x86_64.tar.xz
-	sha256sums = SKIP
+	sha256sums = 69f9a26c7b86e98e9a3d55f611d2dec24f0d03c0253c8b638957da209d4ad100
 
 pkgname = rozelynx-bin
 

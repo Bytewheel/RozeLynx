@@ -167,10 +167,12 @@ box, or from the repo root
 `arch/make-srcinfo.sh arch/<pkg> > arch/<pkg>/.SRCINFO` anywhere else
 (the repo is developed on Gentoo; the helper reproduces
 `makepkg --printsrcinfo` for these single-package PKGBUILDs).
-`rozelynx-bin`'s checksums stay `SKIP` until the first release
-tarball is published (GitHub Releases, asset
-`rozelynx-<ver>-<arch>.tar.xz`); `arch/publish-bin.sh dist/rozelynx-<ver>-<arch>.tar.xz`
-pins the sha256, regenerates `.SRCINFO`, publishes the GitHub release
-with the tarball asset, and pushes the package to the AUR in one step
-(needs `gh auth login` + the built tarball from
-`./rozelynx-distro-build.sh all --tarball`).
+
+`rozelynx-bin` release flow: build the tarball
+(`./rozelynx-distro-build.sh all --tarball`), then
+`arch/publish-bin.sh dist/rozelynx-<ver>-<arch>.tar.xz` pins the
+sha256, regenerates `.SRCINFO`, publishes the GitHub release with the
+tarball asset and pushes the package to the AUR in one step (needs
+`gh auth login`). Note the prebuilt tarballs published so far enable
+the Wayland-only toolkit; build `rozelynx-git` for an x11+wayland
+binary.

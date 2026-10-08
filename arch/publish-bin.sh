@@ -42,7 +42,7 @@ aur_clone=${2:-/storage/src/rozelynx-bin}
 command -v gh >/dev/null 2>&1 || die "gh (GitHub CLI) not found"
 gh auth status >/dev/null 2>&1 || die "gh not authenticated - run: gh auth login"
 [[ -f ${tarball} ]] || die "tarball not found: ${tarball} (build it first: ./rozelynx-distro-build.sh all --tarball)"
-[[ -f ${aur_clone}/PKGBUILD ]] || die "AUR clone missing PKGBUILD: ${aur_clone} (clone ssh://aur@aur.archlinux.org/rozelynx-bin.git)"
+[[ -d ${aur_clone}/.git ]] || die "not an AUR git clone: ${aur_clone} (clone ssh://aur@aur.archlinux.org/rozelynx-bin.git)"
 
 base=${tarball##*/}
 if [[ ! ${base} =~ ^rozelynx-(.+)-(x86_64|aarch64)\.tar\.xz$ ]]; then
@@ -79,6 +79,11 @@ log "regenerated arch/rozelynx-bin/.SRCINFO"
         --notes "RozeLynx ${ver} prebuilt tarball: a staged usr/ tree built
 against glibc by rozelynx-distro-build.sh (Firefox ${ver} + the RozeLynx
 patch set; see the repository README).
+
+Note: this build enables the Wayland-only GTK toolkit (built on a
+Wayland-only host). It needs a Wayland session; for X11/X11-only
+setups, build from source via the rozelynx-git AUR package, which
+defaults to the x11+wayland toolkit.
 
 Install via the rozelynx-bin AUR package, or unpack as root:
     tar -xJf ${base} -C /
