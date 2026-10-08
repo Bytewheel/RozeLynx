@@ -40,6 +40,10 @@ Layout:
   Gentoo build is regenerated from
 - `rozelynx-distro-build.sh` + `rozelynx-distro-versions.conf` — the
   distro-agnostic build and its pinned sources
+- `arch/` — AUR packages: `rozelynx-git` (full source build through the
+  distro-agnostic script) and `rozelynx-bin` (the precompiled release
+  tarballs), each with its generated `.SRCINFO`;
+  `make-srcinfo.sh` regenerates it without makepkg
 - `sync-from-bytewheel.sh` — the mirror refresh script
 
 The LibreWolf patches here are vendored and rebased per Firefox
@@ -118,8 +122,8 @@ eselect repository add bytewheel git https://github.com/ByteWheel/gentoo-overlay
 emerge --ask www-client/firefox
 ```
 
-Features are controlled with USE flags (see the ebuild's
-`metadata.xml` in the overlay for the full list). The RozeLynx set:
+Features are controlled with USE flags (see the ebuild's `metadata.xml`
+in the overlay for the full list). The RozeLynx set:
 
 ```
 rozelynx chrome-web-store experiments external-browser i18n
@@ -136,3 +140,37 @@ policies.json, system preferences live in
 `/usr/lib64/rozelynx/browser/defaults/preferences/`, and the net-iface
 feature gets `CAP_NET_RAW` on `/usr/lib64/rozelynx/rozelynx` via
 setcap in `pkg_postinst`.
+
+### Arch Linux (AUR)
+
+**Yes, Virginia, there is an AUR package!**
+
+Two packages are published from this repo (`arch/`):
+
+- [rozelynx-git](https://aur.archlinux.org/packages/rozelynx-git) —
+  full source build: the PKGBUILD clones this repo and runs
+  `rozelynx-distro-build.sh` (`fetch prepare configure build install`)
+  against the pinned sources, with the same feature-flag defaults as
+  the ebuild. `pkgver` is the pinned `FIREFOX_VERSION` plus the git
+  revision. Expect a long build.
+- [rozelynx-bin](https://aur.archlinux.org/packages/rozelynx-bin) —
+  installs the upstream precompiled tarball release (the same
+  `dist/rozelynx-<ver>-<arch>.tar.xz` the `--tarball` stage produces),
+  published as `v<ver>` GitHub Release assets.
+
+Both packages install to `/usr/lib/rozelynx` and grant `CAP_NET_RAW`
+to the browser binary (net-iface) via setcap in the install hook.
+
+Each package directory carries its `.SRCINFO`; regenerate it after
+any PKGBUILD change: `makepkg --printsrcinfo > .SRCINFO` on an Arch
+box, or from the repo root
+`arch/make-srcinfo.sh arch/<pkg> > arch/<pkg>/.SRCINFO` anywhere else
+(the repo is developed on Gentoo; the helper reproduces
+`makepkg --printsrcinfo` for these single-package PKGBUILDs).
+`rozelynx-bin`'s checksums stay `SKIP` until the first release
+tarball is published (GitHub Releases, asset
+`rozelynx-<ver>-<arch>.tar.xz`); `arch/publish-bin.sh dist/rozelynx-<ver>-<arch>.tar.xz`
+pins the sha256, regenerates `.SRCINFO`, publishes the GitHub release
+with the tarball asset, and pushes the package to the AUR in one step
+(needs `gh auth login` + the built tarball from
+`./rozelynx-distro-build.sh all --tarball`).
