@@ -1123,6 +1123,17 @@ PWAMOZ
 		sed -i '/"url-classifier",/a\    "base/rozelynx-netiface",' \
 			"${S}/netwerk/moz.build" || die
 		eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-necko.patch" || die
+		# v14 webrtc: WebRTC ICE follows the interface assignment - nICEr
+		# opens its own PR sockets and resolved STUN/TURN names through a
+		# null-AdditionalInfo AsyncResolveNative, so a bound tab still
+		# egressed STUN via the default route and published the router
+		# netiface's server-reflexive address. The patch binds the ICE
+		# sockets (SO_BINDTODEVICE after PR_Bind, fail closed), binds the
+		# STUN/TURN server lookups (DNSAdditionalInfo), filters StunAddrs
+		# host candidates to the bound interface, and replicates the
+		# runtime tab map to the socket process (where ICE contexts live)
+		# via PSocketProcess so every layer resolves there.
+		eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-webrtc.patch" || die
 		# Bound-DoH provider-host fix: the necko patch attaches a resolver
 		# URL on the DoH provider's OWN bound lookups (HappyEyeballs +
 		# HTTPSRecordResolver attach sites); upstream NameLookup then fails

@@ -10,6 +10,7 @@
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/net/DNS.h"
+#include "mozilla/net/SocketProcessParent.h"  // RozeLynx v14: tab-map replica push
 #include "nsIChannel.h"
 #include "nsIDNSService.h"
 #include "nsILoadInfo.h"
@@ -468,7 +469,11 @@ RozeLynxNetIface::RozeLynxNetIface() {
 // static
 already_AddRefed<RozeLynxNetIface> RozeLynxNetIface::GetSingleton() {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(XRE_IsParentProcess());
+  // RozeLynx v14: the socket process runs a full singleton too (prefs are
+  // synced by PSocketProcess::PreferenceUpdate, the tab map by the
+  // PSocketProcess push below) so the ICE contexts it hosts can resolve
+  // every layer locally, exactly as the parent resolves a channel.
+  MOZ_ASSERT(XRE_IsParentProcess() || XRE_IsSocketProcess());
   if (!gNetIface) {
     gNetIface = new RozeLynxNetIface();
     gNetIface->Init();
@@ -827,6 +832,13 @@ RozeLynxNetIface::SetTabInterface(uint64_t aBrowserId, const nsACString& aIface)
     }
     mHasAnyAssignment = HasAnyAssignmentLocked() || !mTabMap.IsEmpty();
   }
+  // RozeLynx v14: keep the socket-process replica current.  The tab map is
+  // runtime-only state (never rebuilt from prefs), so without this push the
+  // socket process - where the ICE contexts live by default - would resolve
+  // every PeerConnection below the tab layer, and a tab bound to wlan0
+  // would egress WebRTC via the default route.  A '*' sentinel is pushed as
+  // '*' and translated by the reader, exactly as ResolveForLoad does.
+  PushTabIfaceToSocketProcess(aBrowserId);
   NotifyChanged();
   return NS_OK;
 }
@@ -839,6 +851,7 @@ RozeLynxNetIface::ClearTabInterface(uint64_t aBrowserId) {
     mTabMap.Remove(aBrowserId);
     mHasAnyAssignment = HasAnyAssignmentLocked() || !mTabMap.IsEmpty();
   }
+  PushTabIfaceToSocketProcess(aBrowserId);
   NotifyChanged();
   return NS_OK;
 }
@@ -851,6 +864,63 @@ RozeLynxNetIface::GetTabInterface(uint64_t aBrowserId, nsACString& aOut) {
     aOut = entry.Data();
   }
   return NS_OK;
+}
+
+void RozeLynxNetIface::PushTabIfaceToSocketProcess(uint64_t aBrowserId) {
+  // Parent singleton only: the push is what the replica consumes, so a
+  // replica must never re-push (it has no socket child of its own anyway).
+  if (!XRE_IsParentProcess()) {
+    return;
+  }
+  nsCString iface;
+  bool present = false;
+  {
+    MutexAutoLock lock(mMutex);
+    if (auto entry = mTabMap.Lookup(aBrowserId)) {
+      iface = entry.Data();
+      present = true;
+    }
+  }
+  RefPtr<SocketProcessParent> spp = SocketProcessParent::GetSingleton();
+  if (!spp) {
+    return;  // No socket process (network process disabled): ICE runs here.
+  }
+  if (present) {
+    spp->SendRozeLynxSetTabIface(aBrowserId, iface);
+  } else {
+    spp->SendRozeLynxClearTabIface(aBrowserId);
+  }
+}
+
+void RozeLynxNetIface::SetTabIfaceForSocketProcess(uint64_t aBrowserId,
+                                                   const nsACString& aIface) {
+  // Runs on the socket process main thread (PSocketProcess Recv); the
+  // singleton there is the replica target and GetSingleton() inits it.
+  RefPtr<RozeLynxNetIface> svc = GetSingleton();
+  if (!svc) {
+    return;
+  }
+  MutexAutoLock lock(svc->mMutex);
+  // Mirrors SetTabInterface, including the empty-iface-is-clear rule; the
+  // push side never sends an empty value, but the shape must agree.
+  if (aIface.IsEmpty()) {
+    svc->mTabMap.Remove(aBrowserId);
+  } else {
+    svc->mTabMap.InsertOrUpdate(aBrowserId, nsCString(aIface));
+  }
+  svc->mHasAnyAssignment =
+      svc->HasAnyAssignmentLocked() || !svc->mTabMap.IsEmpty();
+}
+
+void RozeLynxNetIface::ClearTabIfaceForSocketProcess(uint64_t aBrowserId) {
+  RefPtr<RozeLynxNetIface> svc = GetSingleton();
+  if (!svc) {
+    return;
+  }
+  MutexAutoLock lock(svc->mMutex);
+  svc->mTabMap.Remove(aBrowserId);
+  svc->mHasAnyAssignment =
+      svc->HasAnyAssignmentLocked() || !svc->mTabMap.IsEmpty();
 }
 
 NS_IMETHODIMP
@@ -1317,6 +1387,81 @@ bool RozeLynxNetIface::ResolveForOriginAttributes(
     return true;
   }
   return true;
+}
+
+// static
+bool RozeLynxNetIface::ResolveForWebRTC(uint64_t aBrowserId,
+                                       uint32_t aUserContextId,
+                                       const nsACString& aDocUrl,
+                                       nsACString& aOut) {
+  aOut.Truncate();
+  MOZ_ASSERT(NS_IsMainThread());
+  // Called from the CreateIceCtx main-thread hop, in whichever process
+  // builds the ICE context.  The content process (the non-default
+  // media.peerconnection.mtransport_process=false config, where ICE runs
+  // in content) is left out deliberately: it has no tab-map replica (the
+  // push targets the socket process only) and no resolver state worth
+  // consulting, so it resolves unbound and logs, exactly as before.
+  if (!XRE_IsParentProcess() && !XRE_IsSocketProcess()) {
+    return false;
+  }
+  RefPtr<RozeLynxNetIface> svc = GetSingleton();
+  if (!svc || !sEnabled || !sSupported) {
+    return false;
+  }
+
+  MutexAutoLock lock(svc->mMutex);
+  bool resolved = false;
+  // Tab layer: keyed by the PC's top-level BrowsingContext BrowserId, the
+  // same key the popup sets.  A '*' entry is the per-tab all-interfaces
+  // sentinel and resolves to unbound, still winning the layer (a profile
+  // default must not override an explicit tab choice).
+  if (aBrowserId) {
+    if (auto entry = svc->mTabMap.Lookup(aBrowserId)) {
+      if (entry.Data().EqualsLiteral(NS_NETIFACE_ALL_IFACES)) {
+        aOut.Truncate();
+      } else {
+        aOut = entry.Data();
+      }
+      resolved = true;
+    }
+  }
+  // URL-rule layer: the PC's document URL, the same grammar and the same
+  // never-bind exclusion as ResolveForLoad.  An empty aDocUrl (chrome
+  // windows, tests) skips the layer rather than matching rules.
+  if (!resolved && !aDocUrl.IsEmpty() && svc->mUrlRulesEnabled &&
+      !svc->mUrlRules.IsEmpty()) {
+    nsCString scheme;
+    nsCString host;
+    nsCString path;
+    UrlRuleSplitTarget(aDocUrl, scheme, host, path);
+    if (!host.IsEmpty() && !IsNeverBindHost(host)) {
+      nsAutoCString key(scheme);
+      key.AppendLiteral("://");
+      key.Append(host);
+      key.Append(path);
+      if (RozeLynxNetIfaceUrlRule* rule =
+              svc->MatchUrlRuleLocked(key, scheme, host, path)) {
+        aOut = rule->iface;
+        resolved = true;
+      }
+    }
+  }
+  if (!resolved) {
+    if (auto entry = svc->mContainerMap.Lookup(aUserContextId)) {
+      aOut = entry.Data();
+      resolved = true;
+    }
+  }
+  if (!resolved && !svc->mProfileIface.IsEmpty()) {
+    aOut = svc->mProfileIface;
+  }
+  LOG(("RozeLynx netiface: webrtc ctx browserId=%" PRIu64
+       " container=%u doc=%s -> iface=%s\n",
+       aBrowserId, aUserContextId,
+       PromiseFlatCString(aDocUrl).get(),
+       aOut.IsEmpty() ? "(default routing)" : PromiseFlatCString(aOut).get()));
+  return true;  // feature active; aOut "" = unassigned
 }
 
 #undef LOG

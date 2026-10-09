@@ -1,0 +1,880 @@
+diff --git a/netwerk/ipc/PSocketProcess.ipdl b/netwerk/ipc/PSocketProcess.ipdl
+--- a/netwerk/ipc/PSocketProcess.ipdl
++++ b/netwerk/ipc/PSocketProcess.ipdl
+@@ -164,6 +164,13 @@
+       returns (uint32_t aGeneration);
+   async SetOffline(bool offline);
+   async SetConnectivity(bool connectivity);
++  // RozeLynx netiface v14: parent -> socket tab-map replica updates, so the
++  // socket process can resolve the tab layer for the ICE contexts it hosts
++  // (WebRTC's own sockets are bound there by net-iface-webrtc.patch).
++  // aBindIface may be the '*' all-interfaces sentinel; the reader translates
++  // it, it is never handed to setsockopt.
++  async RozeLynxSetTabIface(uint64_t aBrowserId, nsCString aBindIface);
++  async RozeLynxClearTabIface(uint64_t aBrowserId);
+   async InitLinuxSandbox(FileDescriptor? sandboxBroker);
+   async InitSocketProcessBridgeParent(ProcessId processId, Endpoint<PSocketProcessBridgeParent> endpoint);
+   async InitProfiler(Endpoint<PProfilerChild> aEndpoint);
+diff --git a/netwerk/ipc/SocketProcessChild.h b/netwerk/ipc/SocketProcessChild.h
+--- a/netwerk/ipc/SocketProcessChild.h
++++ b/netwerk/ipc/SocketProcessChild.h
+@@ -53,6 +53,11 @@
+       const RequestMemoryReportResolver& aResolver);
+   mozilla::ipc::IPCResult RecvSetOffline(const bool& aOffline);
+   mozilla::ipc::IPCResult RecvSetConnectivity(const bool& aConnectivity);
++  // RozeLynx netiface v14: tab-map replica updates for the socket process
++  // (net-iface-webrtc.patch).
++  mozilla::ipc::IPCResult RecvRozeLynxSetTabIface(const uint64_t& aBrowserId,
++                                                 const nsCString& aBindIface);
++  mozilla::ipc::IPCResult RecvRozeLynxClearTabIface(const uint64_t& aBrowserId);
+   mozilla::ipc::IPCResult RecvInitLinuxSandbox(
+       const Maybe<ipc::FileDescriptor>& aBrokerFd);
+   mozilla::ipc::IPCResult RecvInitSocketProcessBridgeParent(
+diff --git a/netwerk/ipc/SocketProcessChild.cpp b/netwerk/ipc/SocketProcessChild.cpp
+--- a/netwerk/ipc/SocketProcessChild.cpp
++++ b/netwerk/ipc/SocketProcessChild.cpp
+@@ -33,6 +33,7 @@
+ #include "mozilla/ipc/ProcessChild.h"
+ #include "mozilla/ipc/ProcessUtils.h"
+ #include "mozilla/net/AltSvcTransactionChild.h"
++#include "mozilla/net/RozeLynxNetIface.h"  // RozeLynx netiface v14 (tab-map replica)
+ #include "mozilla/net/AppleFastDatapathProbe.h"
+ #include "mozilla/net/BackgroundDataBridgeParent.h"
+ #include "mozilla/net/DNSRequestChild.h"
+@@ -356,6 +357,26 @@
+   return IPC_OK();
+ }
+ 
++// RozeLynx netiface v14: the parent singleton pushes every setTabInterface /
++// clearTabInterface change so this process can resolve the tab layer for the
++// ICE contexts it hosts without a per-lookup round trip (net-iface-webrtc).
++mozilla::ipc::IPCResult SocketProcessChild::RecvRozeLynxSetTabIface(
++    const uint64_t& aBrowserId, const nsCString& aBindIface) {
++  LOG(("RozeLynx netiface: socket replica set browserId=%" PRIu64
++       " iface=%s\n",
++       aBrowserId, aBindIface.get()));
++  RozeLynxNetIface::SetTabIfaceForSocketProcess(aBrowserId, aBindIface);
++  return IPC_OK();
++}
++
++mozilla::ipc::IPCResult SocketProcessChild::RecvRozeLynxClearTabIface(
++    const uint64_t& aBrowserId) {
++  LOG(("RozeLynx netiface: socket replica clear browserId=%" PRIu64 "\n",
++       aBrowserId));
++  RozeLynxNetIface::ClearTabIfaceForSocketProcess(aBrowserId);
++  return IPC_OK();
++}
++
+ mozilla::ipc::IPCResult SocketProcessChild::RecvInitLinuxSandbox(
+     const Maybe<ipc::FileDescriptor>& aBrokerFd) {
+ #if defined(XP_LINUX) && defined(MOZ_SANDBOX)
+diff --git a/dom/media/webrtc/PMediaTransport.ipdl b/dom/media/webrtc/PMediaTransport.ipdl
+--- a/dom/media/webrtc/PMediaTransport.ipdl
++++ b/dom/media/webrtc/PMediaTransport.ipdl
+@@ -62,7 +62,16 @@
+   async EnterPrivateMode();
+   async ExitPrivateMode();
+ 
+-  async CreateIceCtx(string name);
++  // RozeLynx netiface v14 (net-iface-webrtc.patch): aBrowserId is the PC's
++  // top-level BrowsingContext BrowserId (the tab-map key), aUserContextId
++  // its container, aDocUrl the document URL (drives the URL-rule layer; the
++  // socket process cannot read the document). The socket process resolves
++  // the layered assignment locally against its tab-map replica and binds
++  // the ICE sockets it opens with SO_BINDTODEVICE.
++  async CreateIceCtx(string name,
++                     uint64_t browserId,
++                     uint32_t userContextId,
++                     string docUrl);
+ 
+   async SetIceConfig(RTCIceServer[] iceServers,
+                      RTCIceTransportPolicy icePolicy);
+diff --git a/dom/media/webrtc/MediaTransportParent.h b/dom/media/webrtc/MediaTransportParent.h
+--- a/dom/media/webrtc/MediaTransportParent.h
++++ b/dom/media/webrtc/MediaTransportParent.h
+@@ -23,7 +23,10 @@
+   mozilla::ipc::IPCResult RecvClearIceLog();
+   mozilla::ipc::IPCResult RecvEnterPrivateMode();
+   mozilla::ipc::IPCResult RecvExitPrivateMode();
+-  mozilla::ipc::IPCResult RecvCreateIceCtx(const string& name);
++  mozilla::ipc::IPCResult RecvCreateIceCtx(const string& name,
++                                           const uint64_t& aBrowserId,
++                                           const uint32_t& aUserContextId,
++                                           const string& aDocUrl);
+   mozilla::ipc::IPCResult RecvSetIceConfig(
+       nsTArray<RTCIceServer>&& iceServers,
+       const RTCIceTransportPolicy& icePolicy);
+diff --git a/dom/media/webrtc/jsapi/MediaTransportParent.cpp b/dom/media/webrtc/jsapi/MediaTransportParent.cpp
+--- a/dom/media/webrtc/jsapi/MediaTransportParent.cpp
++++ b/dom/media/webrtc/jsapi/MediaTransportParent.cpp
+@@ -173,8 +173,9 @@
+ }
+ 
+ mozilla::ipc::IPCResult MediaTransportParent::RecvCreateIceCtx(
+-    const string& name) {
+-  mImpl->mHandler->CreateIceCtx(name);
++    const string& name, const uint64_t& aBrowserId,
++    const uint32_t& aUserContextId, const string& aDocUrl) {
++  mImpl->mHandler->CreateIceCtx(name, aBrowserId, aUserContextId, aDocUrl);
+   return ipc::IPCResult::Ok();
+ }
+ 
+diff --git a/dom/media/webrtc/jsapi/MediaTransportHandler.h b/dom/media/webrtc/jsapi/MediaTransportHandler.h
+--- a/dom/media/webrtc/jsapi/MediaTransportHandler.h
++++ b/dom/media/webrtc/jsapi/MediaTransportHandler.h
+@@ -58,7 +58,13 @@
+   virtual void EnterPrivateMode() = 0;
+   virtual void ExitPrivateMode() = 0;
+ 
+-  virtual void CreateIceCtx(const std::string& aName) = 0;
++  // RozeLynx netiface v14 (net-iface-webrtc.patch): aBrowserId/aUserContextId/
++  // aDocUrl identify the PC's window for the layered interface assignment
++  // (tab map key, container id, URL-rule document). The IPC impl ships them
++  // to the socket process; the STS impl resolves and binds the ICE sockets.
++  virtual void CreateIceCtx(const std::string& aName, uint64_t aBrowserId,
++                            uint32_t aUserContextId,
++                            const std::string& aDocUrl) = 0;
+ 
+   virtual nsresult SetIceConfig(const nsTArray<dom::RTCIceServer>& aIceServers,
+                                 dom::RTCIceTransportPolicy aIcePolicy) = 0;
+diff --git a/dom/media/webrtc/jsapi/MediaTransportHandler.cpp b/dom/media/webrtc/jsapi/MediaTransportHandler.cpp
+--- a/dom/media/webrtc/jsapi/MediaTransportHandler.cpp
++++ b/dom/media/webrtc/jsapi/MediaTransportHandler.cpp
+@@ -19,6 +19,7 @@
+ #include "mozilla/Preferences.h"
+ #include "mozilla/StaticPrefs_network.h"
+ #include "mozilla/dom/RTCConfigurationBinding.h"
++#include "mozilla/net/RozeLynxNetIface.h"  // RozeLynx netiface v14
+ 
+ // Logging stuff
+ #include "common/browser_logging/CSFLog.h"
+@@ -65,7 +66,9 @@
+   void EnterPrivateMode() override;
+   void ExitPrivateMode() override;
+ 
+-  void CreateIceCtx(const std::string& aName) override;
++  void CreateIceCtx(const std::string& aName, uint64_t aBrowserId,
++                    uint32_t aUserContextId,
++                    const std::string& aDocUrl) override;
+ 
+   nsresult SetIceConfig(const nsTArray<dom::RTCIceServer>& aIceServers,
+                         dom::RTCIceTransportPolicy aIcePolicy) override;
+@@ -195,6 +198,11 @@
+   bool mAllowLoopback = false;
+   bool mAllowLinkLocal = false;
+   Maybe<NrIceCtx::NatSimulatorConfig> mNatConfig;
++  // RozeLynx netiface v14: the interface this ctx's ICE sockets are bound to
++  // ("" = unassigned). Written on STS from the CreateIceCtx continuation,
++  // read on STS (StartIceGathering's host-addr filter) - same thread, and
++  // ordered after mInitPromise resolves.
++  nsCString mBindIface;
+ 
+   std::set<std::string> mSignaledAddresses;
+ 
+@@ -379,7 +387,10 @@
+   return Nothing();
+ }
+ 
+-void MediaTransportHandlerSTS::CreateIceCtx(const std::string& aName) {
++void MediaTransportHandlerSTS::CreateIceCtx(const std::string& aName,
++                                            uint64_t aBrowserId,
++                                            uint32_t aUserContextId,
++                                            const std::string& aDocUrl) {
+   mInitPromise = InvokeAsync(
+       GetMainThreadSerialEventTarget(), __func__,
+       [=, this, self = RefPtr<MediaTransportHandlerSTS>(this)]() {
+@@ -429,13 +440,32 @@
+         mAllowLinkLocal =
+             Preferences::GetBool("media.peerconnection.ice.link_local", false);
+ 
++        // RozeLynx netiface v14: resolve the layered assignment on the main
++        // thread (the tab-map replica / pref caches live on this process's
++        // RozeLynxNetIface singleton, and GetSingleton lazy-init is
++        // main-thread-only). The result is stamped into the ICE context and
++        // the STUN-server resolver below, so every socket nICEr opens for
++        // this PC - host, server-reflexive and relayed candidates alike -
++        // egresses the assigned interface instead of the default route.
++        nsAutoCString bindIface;
++        nsAutoCString rozelynxDocUrl(aDocUrl.c_str());
++        if (net::RozeLynxNetIface::ResolveForWebRTC(aBrowserId, aUserContextId,
++                                                   rozelynxDocUrl, bindIface)) {
++          CSFLogInfo(LOGTAG, "RozeLynx netiface: ICE ctx '%s' bind=%s",
++                     aName.c_str(),
++                     bindIface.IsEmpty() ? "(default routing)"
++                                         : bindIface.get());
++        }
++
+         MOZ_RELEASE_ASSERT(STSShutdownHandler::Instance());
+         STSShutdownHandler::Instance()->Register(this);
+ 
+         return InvokeAsync(
+             mStsThread, __func__,
+-            [=, this, self = RefPtr<MediaTransportHandlerSTS>(this)]() {
+-              mIceCtx = NrIceCtx::Create(aName);
++            [=, this, self = RefPtr<MediaTransportHandlerSTS>(this),
++             bindIface = bindIface]() {
++              mBindIface = bindIface;
++              mIceCtx = NrIceCtx::Create(aName, bindIface);
+               if (!mIceCtx) {
+                 return InitPromise::CreateAndReject("NrIceCtx::Create failed",
+                                                     __func__);
+@@ -444,7 +474,7 @@
+               mIceCtx->SignalConnectionStateChange.connect(
+                   this, &MediaTransportHandlerSTS::OnConnectionStateChange);
+ 
+-              mDNSResolver = MakeRefPtr<NrIceResolver>();
++              mDNSResolver = MakeRefPtr<NrIceResolver>(bindIface);
+               nsresult rv;
+               if (NS_FAILED(rv = mDNSResolver->Init())) {
+                 CSFLogError(LOGTAG, "%s: Failed to initialize dns resolver",
+@@ -761,7 +791,24 @@
+         // just set them here, and only do it here.
+         mIceCtx->SetCtxFlags(aDefaultRouteOnly);
+ 
+-        if (stunAddrs.Length()) {
++        // RozeLynx netiface v14: an interface-bound ctx enumerates host
++        // candidates only on its own interface.  The StunAddrs list carries
++        // every usable local address (it comes from the parent's netlink
++        // sweep); handing it to nICEr unfiltered would let the page learn
++        // addresses on interfaces it must not use - and mDNS obfuscation is
++        // a UI choice (media.peerconnection.mdns_enabled), not an egress
++        // control.  The filtered list is set even when it comes out empty:
++        // an interface with no local addresses must contribute no host
++        // candidates, not fall back to nICEr's own unfiltered enumeration.
++        if (!mBindIface.IsEmpty()) {
++          nsTArray<NrIceStunAddr> boundAddrs;
++          for (const auto& addr : stunAddrs) {
++            if (addr.GetIfname().Equals(mBindIface)) {
++              boundAddrs.AppendElement(addr);
++            }
++          }
++          mIceCtx->SetStunAddrs(boundAddrs);
++        } else if (stunAddrs.Length()) {
+           mIceCtx->SetStunAddrs(stunAddrs);
+         }
+ 
+diff --git a/dom/media/webrtc/jsapi/MediaTransportHandlerIPC.h b/dom/media/webrtc/jsapi/MediaTransportHandlerIPC.h
+--- a/dom/media/webrtc/jsapi/MediaTransportHandlerIPC.h
++++ b/dom/media/webrtc/jsapi/MediaTransportHandlerIPC.h
+@@ -23,7 +23,9 @@
+   void EnterPrivateMode() override;
+   void ExitPrivateMode() override;
+ 
+-  void CreateIceCtx(const std::string& aName) override;
++  void CreateIceCtx(const std::string& aName, uint64_t aBrowserId,
++                    uint32_t aUserContextId,
++                    const std::string& aDocUrl) override;
+ 
+   nsresult SetIceConfig(const nsTArray<dom::RTCIceServer>& aIceServers,
+                         dom::RTCIceTransportPolicy aIcePolicy) override;
+diff --git a/dom/media/webrtc/jsapi/MediaTransportHandlerIPC.cpp b/dom/media/webrtc/jsapi/MediaTransportHandlerIPC.cpp
+--- a/dom/media/webrtc/jsapi/MediaTransportHandlerIPC.cpp
++++ b/dom/media/webrtc/jsapi/MediaTransportHandlerIPC.cpp
+@@ -153,7 +153,10 @@
+       [](const nsCString& aError) {});
+ }
+ 
+-void MediaTransportHandlerIPC::CreateIceCtx(const std::string& aName) {
++void MediaTransportHandlerIPC::CreateIceCtx(const std::string& aName,
++                                            uint64_t aBrowserId,
++                                            uint32_t aUserContextId,
++                                            const std::string& aDocUrl) {
+   CSFLogDebug(LOGTAG, "MediaTransportHandlerIPC::CreateIceCtx start");
+ 
+   mInitPromise->Then(
+@@ -161,7 +164,11 @@
+       [=, this, self = RefPtr<MediaTransportHandlerIPC>(this)](bool /*dummy*/) {
+         if (mChild) {
+           CSFLogDebug(LOGTAG, "%s starting", __func__);
+-          if (NS_WARN_IF(!mChild->SendCreateIceCtx(aName))) {
++          // RozeLynx netiface v14: the PC's window identity rides along so
++          // the socket process can resolve the tab layer against its replica
++          // and bind the ICE sockets it opens (net-iface-webrtc.patch).
++          if (NS_WARN_IF(!mChild->SendCreateIceCtx(aName, aBrowserId,
++                                                  aUserContextId, aDocUrl))) {
+             CSFLogError(LOGTAG, "%s failed!", __func__);
+           }
+         }
+diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+--- a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
++++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+@@ -98,6 +98,7 @@
+ #include "mozilla/dom/RTCSctpTransportBinding.h"  // RTCSctpTransportState
+ #include "mozilla/dom/RTCStatsReportBinding.h"
+ #include "mozilla/glean/DomMediaWebrtcMetrics.h"
++#include "mozilla/BasePrincipal.h"  // RozeLynx netiface v14: OriginAttributesRef
+ #include "mozilla/net/DataChannelProtocol.h"
+ #include "mozilla/net/WebrtcProxyConfig.h"
+ #include "nsContentUtils.h"
+@@ -532,7 +533,39 @@
+   // leave it in an unusable state -- CreateIceCtx must have been called for
+   // other calls to work.
+   mTransportHandler = std::move(transportHandler);
+-  mTransportHandler->CreateIceCtx("PC:" + GetName());
++
++  // RozeLynx netiface v14: identify this PC's window for the layered
++  // interface assignment: the tab-map key (the top-level BrowsingContext's
++  // BrowserId, the same key setTabInterface uses and necko resolves), the
++  // container id, and the document URL for the URL-rule layer (the socket
++  // process cannot read any of these off the window itself).
++  uint64_t rozelynxBrowserId = 0;
++  uint32_t rozelynxUserContextId = 0;
++  std::string rozelynxDocUrl;
++  if (mWindow) {
++    RefPtr<BrowsingContext> rozelynxBc = mWindow->GetBrowsingContext();
++    if (rozelynxBc) {
++      rozelynxBc = rozelynxBc->Top();
++      if (rozelynxBc) {
++        rozelynxBrowserId = rozelynxBc->BrowserId();
++      }
++    }
++    nsCOMPtr<nsIScriptObjectPrincipal> rozelynxScriptPrincipal(
++        do_QueryInterface(mWindow));
++    if (nsIPrincipal* rozelynxPrincipal =
++            rozelynxScriptPrincipal ? rozelynxScriptPrincipal->GetPrincipal()
++                                    : nullptr) {
++      rozelynxUserContextId =
++          rozelynxPrincipal->OriginAttributesRef().mUserContextId;
++    }
++    if (nsIURI* rozelynxUri = mWindow->GetDocumentURI()) {
++      nsAutoCString rozelynxDocSpec;
++      rozelynxUri->GetSpec(rozelynxDocSpec);
++      rozelynxDocUrl = rozelynxDocSpec.get();
++    }
++  }
++  mTransportHandler->CreateIceCtx("PC:" + GetName(), rozelynxBrowserId,
++                                  rozelynxUserContextId, rozelynxDocUrl);
+ 
+   mJsepSession =
+       MakeUnique<JsepSessionImpl>(mName, MakeUnique<PCUuidGenerator>());
+diff --git a/dom/media/webrtc/transport/nricectx.h b/dom/media/webrtc/transport/nricectx.h
+--- a/dom/media/webrtc/transport/nricectx.h
++++ b/dom/media/webrtc/transport/nricectx.h
+@@ -134,7 +134,12 @@
+     Maybe<NatSimulatorConfig> mNatSimulatorConfig;
+   };
+ 
+-  static RefPtr<NrIceCtx> Create(const std::string& aName);
++  // RozeLynx netiface v14 (net-iface-webrtc.patch): aBindIface is the
++  // interface this ctx's sockets are device-bound to ("" = unassigned, the
++  // pre-v14 behavior). Threaded into nr_socket_local_create so every socket
++  // nICEr opens for this ctx - host, srflx and TURN/TCP - egresses it.
++  static RefPtr<NrIceCtx> Create(const std::string& aName,
++                                 const nsACString& aBindIface = ""_ns);
+ 
+   nsresult SetIceConfig(const Config& aConfig);
+ 
+@@ -227,6 +232,9 @@
+   // StartGathering.
+   nsresult SetProxyConfig(NrSocketProxyConfig&& config);
+ 
++  // RozeLynx netiface v14: the interface this ctx's sockets are bound to.
++  const nsCString& GetBindIface() const { return bind_iface_; }
++
+   const std::shared_ptr<NrSocketProxyConfig>& GetProxyConfig() {
+     return proxy_config_;
+   }
+@@ -315,6 +323,8 @@
+   Config config_;
+   RefPtr<TestNat> nat_;
+   std::shared_ptr<NrSocketProxyConfig> proxy_config_;
++  // RozeLynx netiface v14: the interface the ctx's sockets bind to.
++  nsCString bind_iface_;
+   std::map<std::string, std::string> obfuscated_host_addresses_;
+ };
+ 
+diff --git a/dom/media/webrtc/transport/nricectx.cpp b/dom/media/webrtc/transport/nricectx.cpp
+--- a/dom/media/webrtc/transport/nricectx.cpp
++++ b/dom/media/webrtc/transport/nricectx.cpp
+@@ -279,8 +279,13 @@
+       proxy_config_(nullptr) {}
+ 
+ /* static */
+-RefPtr<NrIceCtx> NrIceCtx::Create(const std::string& aName) {
++RefPtr<NrIceCtx> NrIceCtx::Create(const std::string& aName,
++                                  const nsACString& aBindIface) {
+   RefPtr<NrIceCtx> ctx = new NrIceCtx(aName);
++  // RozeLynx netiface v14: stamped before Initialize so the sockets the ICE
++  // stack opens during gathering are device-bound (see nr_socket_local_create
++  // and NrSocketBase::CreateSocket in nr_socket_prsock.cpp).
++  ctx->bind_iface_.Assign(aBindIface);
+ 
+   if (!ctx->Initialize()) {
+     return nullptr;
+@@ -1213,12 +1218,17 @@
+   RefPtr<NrSocketBase> sock;
+   int r, _status;
+   shared_ptr<NrSocketProxyConfig> config = nullptr;
+-
++  // RozeLynx netiface v14: the ctx's interface assignment rides the same
++  // path as the proxy config - through the ctx the factory was built with.
++  // obj is null for the plain-C users (tests, some NAT paths); those stay
++  // unbound, matching the pre-v14 behavior.
++  nsAutoCString bindIface;
+   if (obj) {
+     config = static_cast<NrIceCtx*>(obj)->GetProxyConfig();
++    bindIface = static_cast<NrIceCtx*>(obj)->GetBindIface();
+   }
+ 
+-  r = NrSocketBase::CreateSocket(addr, &sock, config);
++  r = NrSocketBase::CreateSocket(addr, &sock, config, bindIface);
+   if (r) {
+     ABORT(r);
+   }
+diff --git a/dom/media/webrtc/transport/nr_socket_prsock.h b/dom/media/webrtc/transport/nr_socket_prsock.h
+--- a/dom/media/webrtc/transport/nr_socket_prsock.h
++++ b/dom/media/webrtc/transport/nr_socket_prsock.h
+@@ -96,11 +96,23 @@
+   virtual ~NrSocketBase() = default;
+ 
+   // Factory method; will create either an NrSocket, NrUdpSocketIpc, or
+-  // NrTcpSocketIpc as appropriate.
++  // NrTcpSocketIpc as appropriate. aBindIface (RozeLynx netiface v14,
++  // net-iface-webrtc.patch) is the interface the socket must be
++  // SO_BINDTODEVICE-bound to ("" = unassigned, the stock behavior); the
++  // implementations carry it to their fd (NrSocket, NrTcpSocket) or to the
++  // parent-side socket (NrUdpSocketIpc).
+   static int CreateSocket(nr_transport_addr* addr, RefPtr<NrSocketBase>* sock,
+-                          const std::shared_ptr<NrSocketProxyConfig>& config);
++                          const std::shared_ptr<NrSocketProxyConfig>& config,
++                          const nsACString& aBindIface = ""_ns);
+   static bool IsForbiddenAddress(const nr_transport_addr* addr);
+ 
++  // RozeLynx netiface v14: the interface this socket is bound to ("" =
++  // unassigned). Set by CreateSocket before create() runs.
++  const nsCString& GetBindIface() const { return bind_iface_; }
++  void SetBindIface(const nsACString& aBindIface) {
++    bind_iface_.Assign(aBindIface);
++  }
++
+   // the nr_socket APIs
+   virtual int create(nr_transport_addr* addr) = 0;
+   virtual int sendto(const void* msg, size_t len, int flags,
+@@ -136,6 +148,8 @@
+  protected:
+   bool connect_invoked_;
+   nr_transport_addr my_addr_;
++  // RozeLynx netiface v14: the SO_BINDTODEVICE target ("" = unassigned).
++  nsCString bind_iface_;
+ 
+  private:
+   NR_async_cb cbs_[NR_ASYNC_WAIT_WRITE + 1];
+diff --git a/dom/media/webrtc/transport/nr_socket_prsock.cpp b/dom/media/webrtc/transport/nr_socket_prsock.cpp
+--- a/dom/media/webrtc/transport/nr_socket_prsock.cpp
++++ b/dom/media/webrtc/transport/nr_socket_prsock.cpp
+@@ -87,6 +87,9 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/types.h>
++#if defined(XP_LINUX)
++#  include <sys/socket.h>
++#endif
+ 
+ #include "mozilla/IceServerParser.h"
+ #include "mozilla/ProfilerBandwidthCounter.h"
+@@ -109,6 +112,9 @@
+ #include "prerror.h"
+ #include "prio.h"
+ #include "prnetdb.h"
++#if defined(XP_LINUX)
++#  include "private/pprio.h"  // RozeLynx netiface: PR_FileDesc2NativeHandle
++#endif
+ #include "runnable_utils.h"
+ 
+ #if defined(MOZILLA_INTERNAL_API)
+@@ -632,6 +638,40 @@
+     ABORT(R_INTERNAL);
+   }
+ 
++#if defined(XP_LINUX)
++  // RozeLynx netiface v14: SO_BINDTODEVICE the socket to the ctx's assigned
++  // interface, so the ICE stack's own sockets (host, server-reflexive and
++  // TURN) egress it instead of the default route - a bound tab whose WebRTC
++  // keeps asking the router's uplink for its public IP is the exact leak this
++  // closes. Loopback sockets are left alone: they serve local traffic and
++  // would be unreachable through the assigned device. Fails closed (the
++  // socket dies) on setsockopt error, matching nsSocketTransport/nsUDPSocket
++  // in net-iface-necko: silently unbinding would egress via the wrong route.
++  if (!bind_iface_.IsEmpty() && !nr_transport_addr_is_loopback(addr)) {
++    int rozelynxNativeFd = PR_FileDesc2NativeHandle(fd_);
++    if (setsockopt(rozelynxNativeFd, SOL_SOCKET, SO_BINDTODEVICE,
++                   bind_iface_.get(), bind_iface_.Length() + 1) != 0) {
++      int rozelynxErr = errno;
++      if (rozelynxErr == EPERM) {
++        r_log(LOG_GENERIC, LOG_CRIT,
++              "RozeLynx netiface: SO_BINDTODEVICE(%s) EPERM on ICE socket - "
++              "the binary lacks CAP_NET_RAW; build rozelynx with "
++              "USE=net-iface",
++              bind_iface_.get());
++      } else {
++        r_log(LOG_GENERIC, LOG_CRIT,
++              "RozeLynx netiface: SO_BINDTODEVICE(%s) failed on ICE socket, "
++              "errno=%d",
++              bind_iface_.get(), rozelynxErr);
++      }
++      ABORT(R_INTERNAL);
++    }
++    r_log(LOG_GENERIC, LOG_DEBUG,
++          "RozeLynx netiface: ICE socket %p bound to %s", fd_,
++          bind_iface_.get());
++  }
++#endif
++
+   r_log(LOG_GENERIC, LOG_DEBUG, "Creating socket %p with addr %s", fd_,
+         addr->as_string);
+   nr_transport_addr_copy(&my_addr_, addr);
+@@ -1585,7 +1625,8 @@
+ /* static */
+ int NrSocketBase::CreateSocket(
+     nr_transport_addr* addr, RefPtr<NrSocketBase>* sock,
+-    const std::shared_ptr<NrSocketProxyConfig>& config) {
++    const std::shared_ptr<NrSocketProxyConfig>& config,
++    const nsACString& aBindIface) {
+   int r, _status;
+ 
+   if (IsForbiddenAddress(addr)) {
+@@ -1614,6 +1655,11 @@
+     }
+   }
+ 
++  // RozeLynx netiface v14: carry the ctx's interface assignment into the
++  // socket before create() opens the fd, so NrSocket::create (UDP+TCP) and
++  // NrTcpSocket::connect (the WebrtcTCPSocket path) can bind it.
++  (*sock)->SetBindIface(aBindIface);
++
+   r = (*sock)->create(addr);
+   if (r) ABORT(r);
+ 
+diff --git a/dom/media/webrtc/transport/nr_socket_tcp.cpp b/dom/media/webrtc/transport/nr_socket_tcp.cpp
+--- a/dom/media/webrtc/transport/nr_socket_tcp.cpp
++++ b/dom/media/webrtc/transport/nr_socket_tcp.cpp
+@@ -116,7 +116,7 @@
+   mWebrtcTCPSocket = MakeRefPtr<WebrtcTCPSocketWrapper>(this);
+ 
+   mWebrtcTCPSocket->AsyncOpen(remote_host, remote_port, local_addr, local_port,
+-                              use_tls, mConfig);
++                              use_tls, mConfig, bind_iface_);
+ 
+   // trigger nr_socket_buffered to set write/read callback
+   return R_WOULDBLOCK;
+diff --git a/dom/media/webrtc/transport/nriceresolver.h b/dom/media/webrtc/transport/nriceresolver.h
+--- a/dom/media/webrtc/transport/nriceresolver.h
++++ b/dom/media/webrtc/transport/nriceresolver.h
+@@ -58,7 +58,11 @@
+   ~NrIceResolver();
+ 
+  public:
+-  NrIceResolver();
++  // RozeLynx netiface v14 (net-iface-webrtc.patch): aBindIface is the ICE
++  // ctx's interface assignment; STUN/TURN server lookups carry it as the
++  // DNSAdditionalInfo bindIface so they egress the assigned interface's
++  // resolver partition instead of the ambient DNS path.
++  explicit NrIceResolver(const nsACString& aBindIface = ""_ns);
+ 
+   nsresult Init();
+   nr_resolver* AllocateResolver();
+@@ -108,6 +112,8 @@
+   nr_resolver_vtbl* vtbl_;
+   nsCOMPtr<nsIEventTarget> sts_thread_;
+   nsCOMPtr<nsIDNSService> dns_;
++  // RozeLynx netiface v14: the ctx's interface assignment ("" = unassigned).
++  nsCString mBindIface;
+ #ifdef DEBUG
+   int allocated_resolvers_;
+ #endif
+diff --git a/dom/media/webrtc/transport/nriceresolver.cpp b/dom/media/webrtc/transport/nriceresolver.cpp
+--- a/dom/media/webrtc/transport/nriceresolver.cpp
++++ b/dom/media/webrtc/transport/nriceresolver.cpp
+@@ -51,6 +51,8 @@
+ // clang-format on
+ 
+ #include "mozilla/net/DNS.h"  // TODO(jib@mozilla.com) down here because bug 848578
++#include "DNSAdditionalInfo.h"  // RozeLynx netiface v14: bound STUN/TURN DNS
++#include "mozilla/net/RozeLynxNetIface.h"  // RozeLynx netiface v14
+ #include "nr_socket_prsock.h"
+ #include "nriceresolver.h"
+ #include "nsCOMPtr.h"
+@@ -66,13 +68,16 @@
+ 
+ MOZ_MTLOG_MODULE("mtransport")
+ 
+-NrIceResolver::NrIceResolver()
++NrIceResolver::NrIceResolver(const nsACString& aBindIface)
+     : vtbl_(new nr_resolver_vtbl())
+ #ifdef DEBUG
+       ,
+       allocated_resolvers_(0)
+ #endif
+ {
++  // RozeLynx netiface v14: stamped before the vtbl is wired so the first
++  // resolve call can already carry it.
++  mBindIface.Assign(aBindIface);
+   vtbl_->destroy = &NrIceResolver::destroy;
+   vtbl_->resolve = &NrIceResolver::resolve;
+   vtbl_->cancel = &NrIceResolver::cancel;
+@@ -147,6 +152,21 @@
+   nsIDNSService::DNSFlags resolve_flags = nsIDNSService::RESOLVE_DEFAULT_FLAGS;
+   OriginAttributes attrs;
+ 
++  // RozeLynx netiface v14: a bound ctx resolves its STUN/TURN server names
++  // through the assigned interface's resolver partition, so the lookup
++  // egresses (and is cached) on that interface. The AdditionalInfo mirrors
++  // what the channel path stamps (per-interface TRR URI + bindIface); an
++  // empty URI means no DoH for this interface and the lookup stays native,
++  // which leaves the hostname on the default DNS route - the same trade the
++  // necko path makes - while the ICE socket itself stays device-bound.
++  // Declared above the ABORTs: their gotos must not cross the init.
++  nsCOMPtr<nsIDNSAdditionalInfo> rozelynxInfo;
++  if (!mBindIface.IsEmpty()) {
++    nsAutoCString rozelynxTrrUri;
++    net::RozeLynxNetIface::GetEffectiveTrrURI(mBindIface, rozelynxTrrUri);
++    rozelynxInfo = new net::DNSAdditionalInfo(rozelynxTrrUri, -1, mBindIface);
++  }
++
+   if (resource->transport_protocol != IPPROTO_UDP &&
+       resource->transport_protocol != IPPROTO_TCP) {
+     MOZ_MTLOG(ML_ERROR, "Only UDP and TCP are supported.");
+@@ -170,8 +190,8 @@
+ 
+   if (NS_FAILED(dns_->AsyncResolveNative(
+           nsAutoCString(resource->domain_name),
+-          nsIDNSService::RESOLVE_TYPE_DEFAULT, resolve_flags, nullptr, pr,
+-          sts_thread_, attrs, getter_AddRefs(pr->request_)))) {
++          nsIDNSService::RESOLVE_TYPE_DEFAULT, resolve_flags, rozelynxInfo,
++          pr, sts_thread_, attrs, getter_AddRefs(pr->request_)))) {
+     MOZ_MTLOG(ML_ERROR, "AsyncResolve failed.");
+     ABORT(R_NOT_FOUND);
+   }
+diff --git a/dom/media/webrtc/transport/nricestunaddr.h b/dom/media/webrtc/transport/nricestunaddr.h
+--- a/dom/media/webrtc/transport/nricestunaddr.h
++++ b/dom/media/webrtc/transport/nricestunaddr.h
+@@ -30,6 +30,11 @@
+ 
+   ~NrIceStunAddr();
+ 
++  // RozeLynx netiface v14 (net-iface-webrtc.patch): the interface this local
++  // address was enumerated on, so an interface-bound ICE ctx can keep only
++  // its own host candidates out of the list it hands to nICEr.
++  const nsCString& GetIfname() const { return ifname_; }
++
+   void toNrLocalAddr(nr_local_addr& addr) const;
+ 
+   friend struct IPC::ParamTraits<NrIceStunAddr>;
+diff --git a/dom/media/webrtc/transport/common.build b/dom/media/webrtc/transport/common.build
+--- a/dom/media/webrtc/transport/common.build
++++ b/dom/media/webrtc/transport/common.build
+@@ -49,6 +49,9 @@
+     "/dom/media/webrtc/transport/third_party/nrappkit/src/registry",
+     "/dom/media/webrtc/transport/third_party/nrappkit/src/share",
+     "/dom/media/webrtc/transport/third_party/nrappkit/src/util/libekr",
++    # RozeLynx netiface v14 (net-iface-webrtc.patch): DNSAdditionalInfo.h for
++    # the interface-bound STUN/TURN server DNS lookups (nriceresolver.cpp).
++    "/netwerk/dns",
+     "/third_party/libsrtp/src/crypto/include",
+     "/third_party/libsrtp/src/include",
+ ]
+diff --git a/dom/media/webrtc/transport/ipc/PWebrtcTCPSocket.ipdl b/dom/media/webrtc/transport/ipc/PWebrtcTCPSocket.ipdl
+--- a/dom/media/webrtc/transport/ipc/PWebrtcTCPSocket.ipdl
++++ b/dom/media/webrtc/transport/ipc/PWebrtcTCPSocket.ipdl
+@@ -18,12 +18,15 @@
+   manager PNecko or PSocketProcess;
+ 
+ parent:
++  // RozeLynx netiface v14 (net-iface-webrtc.patch): aBindIface rides along so
++  // the parent-side transport egresses the ctx's assigned interface.
+   async AsyncOpen(nsCString aHost,
+                   int32_t aPort,
+                   nsCString aLocalAddress,
+                   int32_t aLocalPort,
+                   bool aUseTls,
+-                  WebrtcProxyConfig? aProxyConfig);
++                  WebrtcProxyConfig? aProxyConfig,
++                  nsCString aBindIface);
+   async Write(uint8_t[] aWriteData);
+   async Close();
+ 
+diff --git a/dom/media/webrtc/transport/ipc/WebrtcTCPSocketParent.h b/dom/media/webrtc/transport/ipc/WebrtcTCPSocketParent.h
+--- a/dom/media/webrtc/transport/ipc/WebrtcTCPSocketParent.h
++++ b/dom/media/webrtc/transport/ipc/WebrtcTCPSocketParent.h
+@@ -23,7 +23,8 @@
+       const nsACString& aHost, const int& aPort,
+       const nsACString& aLocalAddress, const int& aLocalPort,
+       const bool& aUseTls,
+-      const Maybe<WebrtcProxyConfig>& aProxyConfig) override;
++      const Maybe<WebrtcProxyConfig>& aProxyConfig,
++      const nsACString& aBindIface) override;
+ 
+   mozilla::ipc::IPCResult RecvWrite(nsTArray<uint8_t>&& aWriteData) override;
+ 
+diff --git a/dom/media/webrtc/transport/ipc/WebrtcTCPSocketParent.cpp b/dom/media/webrtc/transport/ipc/WebrtcTCPSocketParent.cpp
+--- a/dom/media/webrtc/transport/ipc/WebrtcTCPSocketParent.cpp
++++ b/dom/media/webrtc/transport/ipc/WebrtcTCPSocketParent.cpp
+@@ -19,7 +19,8 @@
+ mozilla::ipc::IPCResult WebrtcTCPSocketParent::RecvAsyncOpen(
+     const nsACString& aHost, const int& aPort, const nsACString& aLocalAddress,
+     const int& aLocalPort, const bool& aUseTls,
+-    const Maybe<WebrtcProxyConfig>& aProxyConfig) {
++    const Maybe<WebrtcProxyConfig>& aProxyConfig,
++    const nsACString& aBindIface) {
+   LOG("WebrtcTCPSocketParent::RecvAsyncOpen {} to {}:{}\n", fmt::ptr(this),
+       PromiseFlatCString(aHost).get(), aPort);
+ 
+@@ -45,7 +46,7 @@
+   }
+ 
+   mChannel->Open(aHost, aPort, aLocalAddress, aLocalPort, aUseTls,
+-                 aProxyConfig);
++                 aProxyConfig, aBindIface);
+ 
+   return IPC_OK();
+ }
+diff --git a/dom/media/webrtc/transport/ipc/WebrtcTCPSocketChild.h b/dom/media/webrtc/transport/ipc/WebrtcTCPSocketChild.h
+--- a/dom/media/webrtc/transport/ipc/WebrtcTCPSocketChild.h
++++ b/dom/media/webrtc/transport/ipc/WebrtcTCPSocketChild.h
+@@ -29,7 +29,8 @@
+   void AsyncOpen(const nsACString& aHost, const int& aPort,
+                  const nsACString& aLocalAddress, const int& aLocalPort,
+                  bool aUseTls,
+-                 const std::shared_ptr<NrSocketProxyConfig>& aProxyConfig);
++                 const std::shared_ptr<NrSocketProxyConfig>& aProxyConfig,
++                 const nsACString& aBindIface = EmptyCString());
+ 
+  protected:
+   virtual ~WebrtcTCPSocketChild();
+diff --git a/dom/media/webrtc/transport/ipc/WebrtcTCPSocketChild.cpp b/dom/media/webrtc/transport/ipc/WebrtcTCPSocketChild.cpp
+--- a/dom/media/webrtc/transport/ipc/WebrtcTCPSocketChild.cpp
++++ b/dom/media/webrtc/transport/ipc/WebrtcTCPSocketChild.cpp
+@@ -58,7 +58,8 @@
+ void WebrtcTCPSocketChild::AsyncOpen(
+     const nsACString& aHost, const int& aPort, const nsACString& aLocalAddress,
+     const int& aLocalPort, bool aUseTls,
+-    const std::shared_ptr<NrSocketProxyConfig>& aProxyConfig) {
++    const std::shared_ptr<NrSocketProxyConfig>& aProxyConfig,
++    const nsACString& aBindIface) {
+   LOG("WebrtcTCPSocketChild::AsyncOpen {} {}:{}\n", fmt::ptr(this),
+       PromiseFlatCString(aHost).get(), aPort);
+ 
+@@ -80,7 +81,8 @@
+                                                                         tabId);
+   }
+ 
+-  SendAsyncOpen(aHost, aPort, aLocalAddress, aLocalPort, aUseTls, proxyConfig);
++  SendAsyncOpen(aHost, aPort, aLocalAddress, aLocalPort, aUseTls, proxyConfig,
++                aBindIface);
+ }
+ 
+ }  // namespace mozilla::net
+diff --git a/dom/media/webrtc/transport/ipc/WebrtcTCPSocket.h b/dom/media/webrtc/transport/ipc/WebrtcTCPSocket.h
+--- a/dom/media/webrtc/transport/ipc/WebrtcTCPSocket.h
++++ b/dom/media/webrtc/transport/ipc/WebrtcTCPSocket.h
+@@ -47,10 +47,14 @@
+   explicit WebrtcTCPSocket(WebrtcTCPSocketCallback* aCallbacks);
+ 
+   void SetTabId(dom::TabId aTabId);
++  // RozeLynx netiface v14 (net-iface-webrtc.patch): aBindIface is the ctx's
++  // interface assignment; the transport OpenWithoutHttpProxy creates is
++  // SO_BINDTODEVICE-bound to it (nsISocketTransport::bindIface).
+   nsresult Open(const nsACString& aHost, const int& aPort,
+                 const nsACString& aLocalAddress, const int& aLocalPort,
+                 bool aUseTls,
+-                const Maybe<net::WebrtcProxyConfig>& aProxyConfig);
++                const Maybe<net::WebrtcProxyConfig>& aProxyConfig,
++                const nsACString& aBindIface = EmptyCString());
+   nsresult Write(nsTArray<uint8_t>&& aBytes);
+   nsresult Close();
+ 
+@@ -75,6 +79,8 @@
+   nsCString mLocalAddress;
+   uint16_t mLocalPort = 0;
+   nsCString mProxyType;
++  // RozeLynx netiface v14: the ctx's interface assignment.
++  nsCString mBindIface;
+ 
+   nsresult DoProxyConfigLookup();
+   nsresult OpenWithHttpProxy();
+diff --git a/dom/media/webrtc/transport/ipc/WebrtcTCPSocket.cpp b/dom/media/webrtc/transport/ipc/WebrtcTCPSocket.cpp
+--- a/dom/media/webrtc/transport/ipc/WebrtcTCPSocket.cpp
++++ b/dom/media/webrtc/transport/ipc/WebrtcTCPSocket.cpp
+@@ -151,7 +151,8 @@
+ nsresult WebrtcTCPSocket::Open(
+     const nsACString& aHost, const int& aPort, const nsACString& aLocalAddress,
+     const int& aLocalPort, bool aUseTls,
+-    const Maybe<net::WebrtcProxyConfig>& aProxyConfig) {
++    const Maybe<net::WebrtcProxyConfig>& aProxyConfig,
++    const nsACString& aBindIface) {
+   LOG("WebrtcTCPSocket::Open {} remote-host={} local-addr={} local-port={}",
+       fmt::ptr(this), PromiseFlatCString(aHost).get(),
+       PromiseFlatCString(aLocalAddress).get(), aLocalPort);
+@@ -190,6 +191,7 @@
+   mLocalAddress = aLocalAddress;
+   mLocalPort = aLocalPort;
+   mProxyConfig = aProxyConfig;
++  mBindIface.Assign(aBindIface);
+ 
+   if (!mProxyConfig.isSome()) {
+     OpenWithoutHttpProxy(nullptr);
+@@ -324,6 +326,18 @@
+     return;
+   }
+ 
++  // RozeLynx netiface v14: the ICE TCP socket egresses the ctx's assigned
++  // interface, not the default route (nsSocketTransport applies
++  // SO_BINDTODEVICE from the bindIface attribute, net-iface-necko).
++  if (!mBindIface.IsEmpty()) {
++    if (NS_WARN_IF(NS_FAILED(mTransport->SetBindIface(mBindIface)))) {
++      CloseWithReason(NS_ERROR_CONNECTION_REFUSED);
++      return;
++    }
++    LOG("WebrtcTCPSocket::OpenWithoutHttpProxy {} bound to {}\n",
++        fmt::ptr(this), mBindIface.get());
++  }
++
+   mTransport->SetReuseAddrPort(true);
+ 
+   PRNetAddr prAddr;
+diff --git a/dom/media/webrtc/transport/WebrtcTCPSocketWrapper.h b/dom/media/webrtc/transport/WebrtcTCPSocketWrapper.h
+--- a/dom/media/webrtc/transport/WebrtcTCPSocketWrapper.h
++++ b/dom/media/webrtc/transport/WebrtcTCPSocketWrapper.h
+@@ -41,7 +41,8 @@
+   virtual void AsyncOpen(const nsCString& aHost, const int& aPort,
+                          const nsCString& aLocalAddress, const int& aLocalPort,
+                          bool aUseTls,
+-                         const std::shared_ptr<NrSocketProxyConfig>& aConfig);
++                         const std::shared_ptr<NrSocketProxyConfig>& aConfig,
++                         const nsACString& aBindIface);
+   virtual void SendWrite(nsTArray<uint8_t>&& aReadData);
+   virtual void Close();
+ 
+diff --git a/dom/media/webrtc/transport/WebrtcTCPSocketWrapper.cpp b/dom/media/webrtc/transport/WebrtcTCPSocketWrapper.cpp
+--- a/dom/media/webrtc/transport/WebrtcTCPSocketWrapper.cpp
++++ b/dom/media/webrtc/transport/WebrtcTCPSocketWrapper.cpp
+@@ -38,22 +38,23 @@
+ void WebrtcTCPSocketWrapper::AsyncOpen(
+     const nsCString& aHost, const int& aPort, const nsCString& aLocalAddress,
+     const int& aLocalPort, bool aUseTls,
+-    const shared_ptr<NrSocketProxyConfig>& aConfig) {
++    const shared_ptr<NrSocketProxyConfig>& aConfig,
++    const nsACString& aBindIface) {
+   if (!NS_IsMainThread()) {
+     MOZ_ALWAYS_SUCCEEDS(mMainThread->Dispatch(
+         NewRunnableMethod<const nsCString, const int, const nsCString,
+-                          const int, bool,
+-                          const shared_ptr<NrSocketProxyConfig>>(
++                          const int, bool, const shared_ptr<NrSocketProxyConfig>,
++                          const nsCString>(
+             "WebrtcTCPSocketWrapper::AsyncOpen", this,
+             &WebrtcTCPSocketWrapper::AsyncOpen, aHost, aPort, aLocalAddress,
+-            aLocalPort, aUseTls, aConfig)));
++            aLocalPort, aUseTls, aConfig, nsCString(aBindIface))));
+     return;
+   }
+ 
+   MOZ_ASSERT(!mWebrtcTCPSocket, "wrapper already open");
+   mWebrtcTCPSocket = new WebrtcTCPSocketChild(this);
+   mWebrtcTCPSocket->AsyncOpen(aHost, aPort, aLocalAddress, aLocalPort, aUseTls,
+-                              aConfig);
++                              aConfig, aBindIface);
+ }
+ 
+ void WebrtcTCPSocketWrapper::SendWrite(nsTArray<uint8_t>&& aReadData) {
+

@@ -771,6 +771,10 @@ PWAMOZ
            netwerk/base/rozelynx-netiface/
         sed -i '/"url-classifier",/a\    "base/rozelynx-netiface",' netwerk/moz.build
         apply_one_patch "${ni_src}/net-iface-necko.patch" -p1
+        # RozeLynx v14: WebRTC ICE follows the interface assignment
+        # (SO_BINDTODEVICE on the mtransport sockets, bound STUN/TURN DNS,
+        # socket-process tab-map replica, per-interface host candidates).
+        apply_one_patch "${ni_src}/net-iface-webrtc.patch" -p1
         apply_one_patch "${ni_src}/net-iface-provider-host-native-fix.patch" -p1
         apply_one_patch "${ni_src}/net-iface-ext-dns.patch" -p1
         apply_one_patch "${ni_src}/net-iface-sessionrestore.patch" -p1

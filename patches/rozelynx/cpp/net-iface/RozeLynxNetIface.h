@@ -168,6 +168,31 @@ class RozeLynxNetIface final : public nsIRozeLynxNetIface,
    */
   static bool ResolveForWebSocket(nsIURI* aURI, nsILoadInfo* aLoadInfo,
                                   nsACString& aOut);
+  /**
+   * RozeLynx v14: same layered resolution for a PeerConnection's ICE
+   * context (nICEr/mtransport), which opens its own PR sockets instead of
+   * riding nsSocketTransport, so the necko plumbing above never sees it.
+   * Called on the main thread of whatever process builds the ICE context
+   * (parent, or socket process via PMediaTransport); the tab layer is read
+   * from this process's replica of the tab map (kept in sync by
+   * SetTabInterface, which pushes every update to the socket process).
+   * aBrowserId/aUserContextId/aDocUrl are the PC's window: the tab map
+   * key, the container id, and the document URL for the URL-rule layer
+   * (an empty aDocUrl skips that layer, like ResolveForOriginAttributes).
+   * Returns false when the feature is off; aOut "" = unassigned.
+   */
+  static bool ResolveForWebRTC(uint64_t aBrowserId, uint32_t aUserContextId,
+                               const nsACString& aDocUrl, nsACString& aOut);
+  /**
+   * RozeLynx v14: socket-process tab-map replica entry points.  The parent
+   * singleton pushes each setTabInterface/clearTabInterface change through
+   * PSocketProcess so the socket process can resolve the tab layer for the
+   * ICE contexts it hosts without a per-lookup round trip.  Mirror of
+   * SetTabInterface's map semantics, including the "*" sentinel.
+   */
+  static void SetTabIfaceForSocketProcess(uint64_t aBrowserId,
+                                          const nsACString& aIface);
+  static void ClearTabIfaceForSocketProcess(uint64_t aBrowserId);
   /** Container+profile layers only (no BrowsingContext available). */
   static bool ResolveForOriginAttributes(const OriginAttributes& aAttrs,
                                          nsACString& aOut);
@@ -180,6 +205,11 @@ class RozeLynxNetIface final : public nsIRozeLynxNetIface,
   void UpdateCachedState();
   void NotifyChanged();
   void FlushDNSCache();
+  // RozeLynx v14: replicate one tab-map entry to the socket process (the
+  // parent runs this after SetTabInterface/ClearTabInterface updated the
+  // authoritative map).  A no-op when there is no socket process to receive
+  // it (network process disabled: ICE then runs in this process).
+  void PushTabIfaceToSocketProcess(uint64_t aBrowserId);
 
   // Shared body of ResolveForChannel/ResolveForWebSocket: the layered
   // lookup (tab > url rule > container > profile) plus the host-index
