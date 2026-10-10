@@ -13,9 +13,9 @@ Firefox fork, including Librewolf and Floorp patches, plus more.
 Lynxes are stronger and more dangerous than foxes. RozeLynx is beautiful, but she must be treated with care.
 
 <p align="center">
-<video src="https://raw.githubusercontent.com/Bytewheel/RozeLynx/main/assets/rozelynx-demo.mp4" poster="https://raw.githubusercontent.com/Bytewheel/RozeLynx/main/assets/rozelynx-demo-poster.jpg" controls width="400"></video>
+<a href="https://www.instagram.com/reel/DeSi2y-unz7/"><img src="assets/rozelynx-demo-poster.jpg" width="400" alt="RozeLynx demo reel - click to watch (with sound) on Instagram"></a>
 <br>
-<em>RozeLynx in action — from the <a href="https://www.instagram.com/reel/DeSi2y-unz7/">Instagram reel</a>. Sound on!</em>
+<em>RozeLynx in action — <a href="https://www.instagram.com/reel/DeSi2y-unz7/">watch the demo reel</a> (sound on!).</em>
 </p>
 
 RozeLynx adds enhanced PWA support, modern download handoff support (well, sort of. Tested with uGet. Testers/PRs welcome!), and the pièce de résistance, per-tab network interface binding. No more redoing VPN split tunnel clients. You can set profile defaults for interfaces, and switch interface per tab on the fly. PLEASE BE CAREFUL. We made great pains preventing leaks, using DNS over HTTPS (DoH), but it is advised to treat this as alpha-stage software. We recommend users to run leak checks with tcpdump or Wireshark, before doing anything sensitive.
