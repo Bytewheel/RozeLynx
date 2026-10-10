@@ -22,6 +22,24 @@ RozeLynx adds enhanced PWA support, modern download handoff support (well, sort 
 
 Linux only, for now. PRs welcome.
 
+## Screenshots
+
+<p align="center">
+<img src="assets/Screenshot_2026-10-10_09:57:56.png" width="400" alt="RozeLynx screenshot">
+</p>
+
+<p align="center">
+<img src="assets/Screenshot_2026-10-10_09:58:18.png" width="400" alt="RozeLynx screenshot">
+</p>
+
+<p align="center">
+<img src="assets/Screenshot_2026-10-10_09:58:36.png" width="400" alt="RozeLynx screenshot">
+</p>
+
+<p align="center">
+<img src="assets/Screenshot_2026-10-10_09:58:47.png" width="400" alt="RozeLynx screenshot">
+</p>
+
 ## About this repository
 
 This is the RozeLynx browser repository: the complete patch set that
@@ -51,7 +69,7 @@ Layout:
   tarballs), each with its generated `.SRCINFO`;
   `make-srcinfo.sh` regenerates it without makepkg
 - `sync-from-bytewheel.sh` — the mirror refresh script
-- `assets/` — the demo video and poster frame embedded in this README
+- `assets/` — the demo video, poster frame and screenshots embedded in this README
 
 The LibreWolf patches here are vendored and rebased per Firefox
 version (the pinned upstream LibreWolf checkout the build fetches is
