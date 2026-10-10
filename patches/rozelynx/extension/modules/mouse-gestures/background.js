@@ -267,6 +267,46 @@
         });
         return true;
       }
+      case 'saveAs': {
+        // The synthetic menu's "Save ... As..." entries (see content.js for
+        // why they are routed here rather than faked with a page anchor).
+        // downloads.download is not exposed to content scripts - it is
+        // registered for extension pages - and saveAs:true is the one way to
+        // bring up the browser's own file picker, which is what a menu item
+        // named "Save Image As..." promises. The download is issued with the
+        // target URL's own cookie jar (cookieJarSettings.initWithURI in
+        // ext-downloads.js), so cross-origin and authenticated images save
+        // exactly as they do from the native context menu.
+        var saUrl = message.data && message.data.url;
+        if (!saUrl) {
+          sendResponse({ ok: false, error: 'no url' });
+          break;
+        }
+        var saOpts = { url: saUrl, saveAs: true };
+        // The filename is a picker prefill hint, and only the data:-URL
+        // branch of content.js ever sends one; a suggested name the API
+        // refuses must not lose the download, so a retry without it lives
+        // below.
+        if (message.data.filename) saOpts.filename = message.data.filename;
+        browser.downloads.download(saOpts).then(function(id) {
+          sendResponse({ ok: true, id: id });
+        }, function(saErr) {
+          var saWhy = String((saErr && saErr.message) || saErr);
+          if (saOpts.filename) {
+            // A refused suggestion (illegal characters, a path, ..) is not a
+            // refused download: the name is a hint, so try again without it
+            // and let the picker default.
+            browser.downloads.download({ url: saUrl, saveAs: true }).then(
+              function(id2) { sendResponse({ ok: true, id: id2 }); },
+              function(saErr2) {
+                sendResponse({ ok: false, error: String((saErr2 && saErr2.message) || saErr2) });
+              });
+            return;
+          }
+          sendResponse({ ok: false, error: saWhy });
+        });
+        return true;
+      }
       case 'getStatus':
         sendResponse({ enabled: enabled, gestureCount: Object.keys(gestures).length });
         break;

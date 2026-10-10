@@ -310,24 +310,68 @@
     } catch (e) {}
   }
 
-  function isSameOrigin(url) {
-    try {
-      if (!url) return false;
-      if (url.indexOf('data:') === 0 || url.indexOf('blob:') === 0) return true;
-      var u = new URL(url, document.baseURI);
-      return u.origin === window.location.origin;
-    } catch (e) {
-      return false;
-    }
-  }
+  // A data: URL names no file at all, and the picker needs a suggested name
+  // to prefill, so derive one from the MIME type the URL itself carries. The
+  // list is a whitelist rather than a split on '/' because a suggested name is
+  // passed straight to the download machinery and must never be a page-chosen
+  // string; anything unrecognised prefill nothing and lets the picker default.
+  var DATA_URL_NAMES = {
+    'image/png': 'image.png',
+    'image/jpeg': 'image.jpg',
+    'image/gif': 'image.gif',
+    'image/webp': 'image.webp',
+    'image/svg+xml': 'image.svg',
+    'image/bmp': 'image.bmp',
+    'video/webm': 'video.webm',
+    'video/mp4': 'video.mp4',
+    'audio/webm': 'audio.webm',
+    'audio/ogg': 'audio.ogg',
+    'audio/mpeg': 'audio.mp3',
+  };
 
+  // "Save ... As..." for links, images and media. The Save dialog and the
+  // download behind it are browser chrome, so the whole entry point is a
+  // message to the background, whose downloads.download({saveAs:true})
+  // brings up the browser's own file picker.
+  //
+  // The previous implementation appended a synthetic <a download> to the page
+  // and clicked it, and never worked. Downloads-handoff's capture-phase click
+  // hook (modules/downloads-handoff/content.js) treats any anchor carrying a
+  // download attribute as a hand-off candidate: it eats the click, and - with
+  // no manager configured, the default - "restores" it as location.assign(),
+  // a navigation, so "Save Image As..." navigated the tab to the image and
+  // saved nothing. Even a click the hook never saw was wrong twice: it
+  // honoured the download attribute only for same-origin URLs (hence the old
+  // isSameOrigin() gates, which hid the entries for most images on the web),
+  // and it was a silent drop into the download folder, never a "Save As"
+  // dialog at all.
+  //
+  // The background route fixes both at once: downloads.download issues the
+  // request with the target URL's own cookie jar (cookieJarSettings.
+  // initWithURI in ext-downloads.js), so cross-origin and authenticated
+  // images save the way the native context menu saves them, and the
+  // mouse-gestures module is below in this same file's menu, never a page
+  // anchor, so no click hook can mistake it for a candidate again.
   function saveAs(src) {
-    var a = document.createElement('a');
-    a.href = src;
-    a.download = '';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    var filename = '';
+    try {
+      var u = new URL(src, document.baseURI);
+      if (u.protocol === 'data:') {
+        var mime = /^data:([^;,]+)/i.exec(src);
+        filename = (mime && DATA_URL_NAMES[mime[1].toLowerCase()]) || '';
+      }
+    } catch (e) {}
+    var msg = { module: 'mouse-gestures', action: 'saveAs', data: { url: src } };
+    if (filename) msg.data.filename = filename;
+    browser.runtime.sendMessage(msg).then(function(resp) {
+      if (resp && resp.ok) return;
+      var err = (resp && resp.error) || 'no answer from the background';
+      // A cancelled picker is the user's own decision, not a failure to
+      // report: the API rejects with exactly this message on cancel.
+      if (!/cancel/i.test(err)) showToast('Save As failed: ' + err);
+    }).catch(function() {
+      showToast('Save As needs the RozeLynx background');
+    });
   }
 
   function copyImage(img) {
@@ -1024,9 +1068,7 @@
             : linkText;
           items.push({ label: 'Copy Email Address', fn: function() { copyText(addr); } });
         }
-        if (isSameOrigin(href)) {
-          items.push({ label: 'Save Link As...', fn: function() { saveAs(href); } });
-        }
+        items.push({ label: 'Save Link As...', fn: function() { saveAs(href); } });
         items.push({ sep: true });
         rozelynxGroup(link);
         break;
@@ -1040,9 +1082,7 @@
         items.push({ sep: true });
         items.push({ label: 'Copy Image', fn: function() { copyImage(img); } });
         items.push({ label: 'Copy Image Link', fn: function() { copyText(src); } });
-        if (isSameOrigin(src)) {
-          items.push({ label: 'Save Image As...', fn: function() { saveAs(src); } });
-        }
+        items.push({ label: 'Save Image As...', fn: function() { saveAs(src); } });
         items.push({ sep: true });
         rozelynxGroup(img);
         break;
@@ -1068,9 +1108,7 @@
         if (msrc) {
           items.push({ label: 'Open in New Tab', fn: function() { openInNewTab(msrc); } });
           items.push({ label: 'Copy Link', fn: function() { copyText(msrc); } });
-          if (isSameOrigin(msrc)) {
-            items.push({ label: 'Save As...', fn: function() { saveAs(msrc); } });
-          }
+          items.push({ label: 'Save As...', fn: function() { saveAs(msrc); } });
           items.push({ sep: true });
         }
         rozelynxGroup(media);

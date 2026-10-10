@@ -71,8 +71,60 @@
     return false;
   }
 
+  // True while a released anchor's own re-dispatched click is in flight.
+  // HTMLElement.click() fires the event synchronously, so a plain flag is
+  // enough to keep the re-dispatched click from being intercepted again -
+  // and only for the duration of that one event, so the user's next real
+  // click on the same anchor is a candidate like any other.
+  var releasing = false;
+
+  // The default action we prevented on a download-attribute candidate was a
+  // DOWNLOAD, not a navigation - that attribute is the page's own statement
+  // that the link is a file to fetch, and it is why onClick treated the click
+  // as a candidate at all. A navigation is not that action: for an image it
+  // replaces "save" with "display", and for anything the browser can render
+  // it turns the download the page asked for into a tab navigation. The old
+  // passThrough did exactly that, so a declined <a download> - a page's own
+  // "Download PNG" button, or the synthetic menu's Save-As before it moved to
+  // the background - navigated instead of saved.
+  //
+  // The restore is a second click on the same anchor with the hook stood
+  // down: the browser then performs its own default action, which is the
+  // download the attribute describes - picker included when the user asked
+  // for one, suggested filename and all.
+  function releaseDownload(anchor, downloadAttr) {
+    releasing = true;
+    try {
+      // A detached anchor cannot be re-clicked: the event would fire on it,
+      // but no default action follows, so nothing would download. The page
+      // may well have removed it while the answer was in flight - a click
+      // handler of its own, a route change - so this is checked rather than
+      // assumed.
+      if (anchor.isConnected) {
+        anchor.click();
+        releasing = false;
+        return;
+      }
+    } catch (e) {
+      // An anchor that cannot be re-clicked at all is the same situation as
+      // a detached one: the background starts the download instead.
+    }
+    releasing = false;
+    // The background can start the same download itself, so ask it to
+    // rather than eat the click: downloads.download is scheme-checked and
+    // gate-checked there exactly as here, and every reason Layer A declined
+    // (no handler, excluded, bypassed, deferred, non-http) is a decline
+    // Layer B makes too, so the restore cannot loop back.
+    browser.runtime.sendMessage({
+      action: 'downloads-handoff:browser-download',
+      data: { url: anchor.href, filename: downloadAttr || '' },
+    }).catch(function() {});
+  }
+
   // A navigation the click would have performed, minus the click. Anything
   // with a target other than _self goes to a new context, as it would have.
+  // Only for candidates that carried NO download attribute: those clicks
+  // would have navigated, so a navigation is a faithful restore.
   function passThrough(anchor) {
     var target = (anchor.getAttribute('target') || '').toLowerCase();
     if (target && target !== '_self' && typeof window.open === 'function') {
@@ -87,6 +139,9 @@
   }
 
   function onClick(ev) {
+    // A release's own re-dispatched click: not a candidate, and not to be
+    // prevented - the browser's default action is the whole point.
+    if (releasing) return;
     // A modified click means something else (new tab, new window, download
     // into a different place), and the page may already have handled it.
     if (ev.defaultPrevented || ev.button !== 0 ||
@@ -124,6 +179,12 @@
         }));
       }
       if (reply && reply.ok) return;
+      // The restore has to match the action it is restoring: a download
+      // for a download-attribute candidate, a navigation for a plain link.
+      if (downloadAttr !== null) {
+        releaseDownload(anchor, downloadAttr);
+        return;
+      }
       passThrough(anchor);
     }
     try {

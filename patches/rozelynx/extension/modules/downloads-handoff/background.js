@@ -893,6 +893,29 @@
     return parts[parts.length - 1] || '';
   }
 
+  // Start a download that stays in THIS browser rather than going to the
+  // manager: the content script's release path (a declined
+  // download-attribute candidate whose anchor the page removed mid-flight -
+  // see modules/downloads-handoff/content.js), Layer B's give-it-back
+  // restore, and the context-menu escape item. This is not a bypass: the
+  // download the API starts fires downloads.onCreated, so it runs the same
+  // gate again, and every reason a caller was declined here (no handler,
+  // excluded, bypassed, deferred, non-http) is a reason Layer B declines
+  // too - a restored download proceeds, a handed-off one does not loop.
+  //
+  // The filename is a suggestion (the download attribute is a name the page
+  // chose, not a path we chose), so a suggestion the API refuses - illegal
+  // characters, an absolute path, back-references - is retried without it
+  // rather than losing the download.
+  function startBrowserDownload(url, filename) {
+    var opts = { url: url, conflictAction: 'uniquify' };
+    if (filename) opts.filename = filename;
+    return browser.downloads.download(opts).catch(function(err) {
+      if (!opts.filename) throw err;
+      return browser.downloads.download({ url: url, conflictAction: 'uniquify' });
+    });
+  }
+
   function cancelAndHandOff(item, url, size) {
     var meta = {
       filename: basename(item.filename),
@@ -941,10 +964,7 @@
         log('error', 'hand-off failed for ' + url + ' (' + err.message +
             '); restoring the browser download');
         bypass(url, 'hand-off failed');
-        return browser.downloads.download({
-          url: url,
-          conflictAction: 'uniquify',
-        }).then(function(id) {
+        return startBrowserDownload(url).then(function(id) {
           return { restored: id };
         }, function(restoreErr) {
           log('error', 'could not restore the browser download for ' + url +
@@ -1010,15 +1030,12 @@
       // escape is a context menu item on the link, which is reachable from
       // exactly the place the download was started.
       bypass(info.linkUrl, 'context menu');
-      Promise.resolve(browser.downloads.download({
-        url: info.linkUrl,
-        conflictAction: 'uniquify',
-      })).then(function(id) {
+      startBrowserDownload(info.linkUrl).then(function(id) {
         log('info', 'forced a browser download for ' + info.linkUrl +
             ' (id ' + id + ')');
       }, function(err) {
         log('error', 'forced browser download failed: ' +
-            (err && err.message));
+            ((err && err.message) || err));
       });
     });
   }
@@ -1181,7 +1198,8 @@
         action !== 'downloads-handoff:handlers' &&
         action !== 'downloads-handoff:set-handlers' &&
         action !== 'downloads-handoff:set-enabled' &&
-        action !== 'downloads-handoff:probe') {
+        action !== 'downloads-handoff:probe' &&
+        action !== 'downloads-handoff:browser-download') {
       return false;
     }
     if (action === 'downloads-handoff:status' ||
@@ -1210,6 +1228,20 @@
         sendResponse(statusPayload(state.config || defaultConfig()));
       }, function() {
         sendResponse(statusPayload(state.config || defaultConfig()));
+      });
+      return true;
+    }
+    if (action === 'downloads-handoff:browser-download') {
+      // Layer A's detached-anchor release (see content.js): the click hook
+      // let a download-attribute candidate go, and the anchor the click
+      // belongs to is gone, so the download itself starts here. The ok/id
+      // shape is the one every other action in this extension answers in.
+      var rel = message.data || {};
+      startBrowserDownload(rel.url, rel.filename).then(function(id) {
+        sendResponse({ ok: true, id: id });
+      }, function(err) {
+        sendResponse({ ok: false,
+          error: String((err && err.message) || err) });
       });
       return true;
     }
