@@ -12,6 +12,12 @@ Firefox fork, including Librewolf and Floorp patches, plus more.
 
 Lynxes are stronger and more dangerous than foxes. RozeLynx is beautiful, but she must be treated with care.
 
+<p align="center">
+<video src="https://raw.githubusercontent.com/Bytewheel/RozeLynx/main/assets/rozelynx-demo.mp4" poster="https://raw.githubusercontent.com/Bytewheel/RozeLynx/main/assets/rozelynx-demo-poster.jpg" controls width="400"></video>
+<br>
+<em>RozeLynx in action — from the <a href="https://www.instagram.com/reel/DeSi2y-unz7/">Instagram reel</a>. Sound on!</em>
+</p>
+
 RozeLynx adds enhanced PWA support, modern download handoff support (well, sort of. Tested with uGet. Testers/PRs welcome!), and the pièce de résistance, per-tab network interface binding. No more redoing VPN split tunnel clients. You can set profile defaults for interfaces, and switch interface per tab on the fly. PLEASE BE CAREFUL. We made great pains preventing leaks, using DNS over HTTPS (DoH), but it is advised to treat this as alpha-stage software. We recommend users to run leak checks with tcpdump or Wireshark, before doing anything sensitive.
 
 Linux only, for now. PRs welcome.
@@ -45,6 +51,7 @@ Layout:
   tarballs), each with its generated `.SRCINFO`;
   `make-srcinfo.sh` regenerates it without makepkg
 - `sync-from-bytewheel.sh` — the mirror refresh script
+- `assets/` — the demo video and poster frame embedded in this README
 
 The LibreWolf patches here are vendored and rebased per Firefox
 version (the pinned upstream LibreWolf checkout the build fetches is
