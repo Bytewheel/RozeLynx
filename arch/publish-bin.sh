@@ -71,12 +71,22 @@ log "pinned arch/rozelynx-bin/PKGBUILD: pkgver=${ver} sha256sums=${sha}"
 "${SELF_DIR}/make-srcinfo.sh" "${pkgbuild_dir}" > "${pkgbuild_dir}/.SRCINFO"
 log "regenerated arch/rozelynx-bin/.SRCINFO"
 
-# 3. GitHub Release with the tarball asset
+# 3. GitHub Release with the tarball asset.
+#
+# Same-version re-publishes (a pkgrel bump after a rebuild) find the release
+# already there: `gh release create` refuses, and deleting the release to
+# re-create it would 404 the asset for every user mid-upgrade. So the
+# release is created only when it does not exist, and refreshed with
+# `gh release upload --clobber` (an atomic asset replace) when it does.
 (
     cd "${REPO_ROOT}"
-    gh release create "v${ver}" \
-        --title "RozeLynx ${ver}" \
-        --notes "RozeLynx ${ver} prebuilt tarball: a staged usr/ tree built
+    if gh release view "v${ver}" >/dev/null 2>&1; then
+        log "release v${ver} exists - replacing the asset in place"
+        gh release upload "v${ver}" "${tarball}#rozelynx-${ver}-${arch}.tar.xz" --clobber
+    else
+        gh release create "v${ver}" \
+            --title "RozeLynx ${ver}" \
+            --notes "RozeLynx ${ver} prebuilt tarball: a staged usr/ tree built
 against glibc by rozelynx-distro-build.sh (Firefox ${ver} + the RozeLynx
 patch set; see the repository README).
 
@@ -88,15 +98,22 @@ defaults to the x11+wayland toolkit.
 Install via the rozelynx-bin AUR package, or unpack as root:
     tar -xJf ${base} -C /
 " \
-        "${tarball}#rozelynx-${ver}-${arch}.tar.xz"
+            "${tarball}#rozelynx-${ver}-${arch}.tar.xz"
+    fi
 )
-log "published GitHub release v${ver} with asset ${base}"
+log "GitHub release v${ver} carries asset ${base} (sha256 ${sha})"
 
-# 4. copy into the AUR clone, commit, push
+# 4. copy into the AUR clone, commit, push.
+#
+# The commit message carries the PKGBUILD's OWN pkgrel, not a hardcoded -1:
+# the pkgrel bump for a same-version rebuild is made in the PKGBUILD before
+# this runs, and a message that says -1 while the package says 4 is a lie
+# in the one place a reader looks first.
+pkgrel=$(sed -n 's/^pkgrel=//p' "${pkgbuild_dir}/PKGBUILD")
 for f in PKGBUILD .SRCINFO rozelynx-bin.install LICENSE; do
     cp "${pkgbuild_dir}/${f}" "${aur_clone}/${f}"
 done
 git -C "${aur_clone}" add PKGBUILD .SRCINFO rozelynx-bin.install LICENSE
-git -C "${aur_clone}" commit -m "rozelynx-bin ${ver}-1: pin prebuilt release (sha256 ${sha:0:16}...)"
+git -C "${aur_clone}" commit -m "rozelynx-bin ${ver}-${pkgrel}: pin prebuilt release (sha256 ${sha:0:16}...)"
 git -C "${aur_clone}" push
 log "pushed rozelynx-bin to the AUR: https://aur.archlinux.org/packages/rozelynx-bin"
