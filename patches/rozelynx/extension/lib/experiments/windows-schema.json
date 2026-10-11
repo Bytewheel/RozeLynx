@@ -88,7 +88,7 @@
         "name": "writeIconFile",
         "type": "function",
         "async": true,
-        "description": "Decode a base64 image data: URL and write it to <profile>/pwa-icons/<fileName>, returning {ok, path, bytes}. The native icon setter takes a filesystem path for gdk-pixbuf, while a PWA's manifest icon is only available as a data: URL, so the parent process materialises it.",
+        "description": "Decode a base64 image data: URL and write it to <profile>/pwa-icons/<fileName>, returning {ok, path, bytes}. The native icon setter takes a filesystem path for gdk-pixbuf, while a PWA's manifest icon is only available as a data: URL, so the parent process materialises it. The file EXTENSION is derived from the payload's magic bytes (PNG/JPEG/GIF/BMP/ICO/WebP/SVG) first and the declared media type second, because servers answer application/octet-stream to perfectly good icons.",
         "parameters": [
           {
             "name": "dataUrl",
@@ -148,7 +148,7 @@
         "name": "hasDesktopEntry",
         "type": "function",
         "async": true,
-        "description": "Report whether a PWA's generated .desktop entry exists in $XDG_DATA_HOME/applications, as {ok, path, name, exists}. This is the read half of writeDesktopEntry/removeDesktopEntry: a reconcile pass needs to know which installed apps still have no launcher entry, because the only other way to get one was to reinstall the app.",
+        "description": "Report whether a PWA's generated .desktop entry exists in $XDG_DATA_HOME/applications, as {ok, path, name, exists}, and - when it does - its Icon= key's value as an optional icon field, plus an optional iconExists field saying whether the file an absolute Icon= value names is still on disk. This is the read half of writeDesktopEntry/removeDesktopEntry: a reconcile pass needs to know which installed apps still have no launcher entry, and which entries carry a stale Icon= (the theme-name fallback, or a path whose file has gone away) that needs rewriting. The icon fields are optional: an older parent that reports neither is answered as 'cannot be known', never as a rewrite signal.",
         "parameters": [
           {
             "name": "fileName",

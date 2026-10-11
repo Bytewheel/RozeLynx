@@ -18,6 +18,12 @@
 // WebExtension has no filesystem API, and it is the only reason the
 // --profile pin and StartupWMClass grouping in the Exec line are reachable
 // at all. Gated on rozelynx.pwa.generateDesktopEntries (default true).
+//
+// Icons (v1.0.73+): every Icon= key, --ssb-icon flag and taskbar icon comes
+// from ONE resolver, materialiseIcon below, which works through the stored
+// icon, stored candidate URLs, a live tab favicon, the packaged fallback
+// artwork (icons/pwa-fallback.png), and only then the hicolor theme name.
+// See the materialisation block for why each step exists.
 
 (function() {
   'use strict';
@@ -105,6 +111,13 @@
 
   var PWAStore = {
     sites: [],
+    // Set once load() has resolved. materialiseIcon persists a fetched icon
+    // back into a site record (see the icon pipeline below); doing that
+    // while sites is still [] would merge into an empty array and save it,
+    // which is how one import wipes every other installed app. The flag is
+    // the difference between "the record could not be found" and "the store
+    // has not been read yet".
+    loaded: false,
 
     load: async function() {
       try {
@@ -116,6 +129,7 @@
         console.error('[RozeLynx PWA] Failed to load data store:', e);
         PWAStore.sites = [];
       }
+      PWAStore.loaded = true;
     },
 
     save: async function() {
@@ -226,8 +240,11 @@
   // generateDesktopEntry writes StartupWMClass=rozelynx-<safe name>, and that
   // has to match the window's WM_CLASS for the taskbar/launcher to associate
   // the two. setWindowIcon exists because the icon is stored as a data: URL
-  // (ManifestProcessor.fetchIcon) while the C++ takes a path for
+  // (the install ladder: ManifestProcessor.normalize -> the fetch+canvas rungs)
+  // while the C++ takes a path for
   // gdk_pixbuf_new_from_file, so the parent materialises it under
+  // <profile>/pwa-icons/ first (see the icon pipeline below).
+  //
   // Is the --ssb command-line handler reachable?  (PLAN-SESSION-20 G.9)
   //
   // Probed once at module load, not on the first PWA launch, because the whole
@@ -408,29 +425,31 @@
       if (!await this.isAvailable()) {
         return { ok: false, error: 'taskbar integration unavailable' };
       }
-      // Both install paths store the manifest icon as a data: URL (see
-      // ManifestProcessor.fetchIcon), and a site installed from a URL alone
-      // carries no icon at all - both are normal, so neither is an error.
-      // materialiseIcon is the same call the launcher entry uses, so the
-      // window icon and the .desktop Icon= key are the same file.
-      var iconPath = '';
+      // materialiseIcon is the same resolver the launcher entry uses (see
+      // the icon pipeline below), so the window icon and the .desktop Icon=
+      // key are the same file - and it answers the fallback art rather than
+      // 'site has no usable icon file', because a window whose site has no
+      // usable icon is exactly the window that was showing the discontinued
+      // old logo the fallback replaces.
+      var res = { path: '', source: 'none' };
       try {
-        iconPath = await materialiseIcon(site);
+        res = await materialiseIcon(site);
       } catch (e) {
         bgDiag('taskbar-icon-materialise-throw window=' + windowId + ' ' + e);
+        return { ok: false, error: String(e) };
       }
-      if (!iconPath) {
+      if (!res.path) {
         bgDiag('taskbar-icon-skip window=' + windowId + ' no-icon-file');
         return { ok: false, error: 'site has no usable icon file' };
       }
       try {
-        var res = await browser.rozelynxWindows.setWindowIconFromPath(windowId, iconPath);
-        bgDiag('taskbar-icon window=' + windowId + ' path=' + iconPath +
-          ' ok=' + !!(res && res.ok) +
-          (res && res.ok
-            ? ' via=' + (res.via || '?') + (res.qiError ? ' qiError=' + res.qiError : '')
-            : ' error=' + ((res && res.error) || 'none')));
-        return res;
+        var r = await browser.rozelynxWindows.setWindowIconFromPath(windowId, res.path);
+        bgDiag('taskbar-icon window=' + windowId + ' path=' + res.path +
+          ' source=' + res.source + ' ok=' + !!(r && r.ok) +
+          (r && r.ok
+            ? ' via=' + (r.via || '?') + (r.qiError ? ' qiError=' + r.qiError : '')
+            : ' error=' + ((r && r.error) || 'none')));
+        return r;
       } catch (e) {
         bgDiag('taskbar-icon-throw window=' + windowId + ' ' + e);
         return { ok: false, error: String(e) };
@@ -459,12 +478,18 @@
   var DesktopEntry = {
     PREF: 'rozelynx.pwa.generateDesktopEntries',
     PREF_DEFAULT: true,
-    // Icon name the ebuild installs into the hicolor theme
-    // (newicon ... rozelynx.png, ebuild "Install icons and desktop"). An
-    // Icon= value is either an absolute path or an icon NAME; the old
-    // 'rozelynx-pwa' fallback resolved to nothing in any theme, and
-    // site.iconPath carried a data: URL, which the specification does not
-    // allow as an Icon value at all.
+    // LAST-RESORT icon name only: the ebuild installs this name into the
+    // hicolor theme (newicon ... rozelynx.png). An Icon= value is either an
+    // absolute path or an icon NAME, and 1.0.73 materialises a real file
+    // (site icon, candidate, tab favicon, or the packaged fallback artwork)
+    // before ever falling back here, so this name is reachable only when
+    // the parent write itself is unavailable - which is also the only state
+    // in which no launcher entry is written at all. It used to be the
+    // everyday fallback for any site without a usable icon, which is how
+    // PWAs kept launching with the hicolor theme's discontinued old logo.
+    // It is NOT changed to a new theme name on purpose: 'rozelynx' stays
+    // what the ebuild renders (the notification badge shares it), and the
+    // new fallback ART lives in the extension, not the theme.
     FALLBACK_ICON: 'rozelynx',
 
     _api: function(name) {
@@ -508,12 +533,19 @@
         if (!write) {
           return { ok: false, error: 'rozelynxWindows.writeDesktopEntry missing' };
         }
+        // The icon resolver answers {path, source}; a PWA is installed and
+        // launchable whether or not an icon came out, so a failure here is
+        // logged and the entry is still written with the theme-name
+        // fallback Icon=.
         var iconPath = '';
+        var iconSource = 'none';
         try {
-          iconPath = await materialiseIcon(site);
+          var iconRes = await materialiseIcon(site);
+          iconPath = iconRes.path;
+          iconSource = iconRes.source;
         } catch (e) {
-          // The entry is still worth writing without a site icon: Icon= falls
-          // back to the app icon name.
+          // The entry is still worth writing without a site icon: Icon=
+          // falls back to the app icon name.
           bgDiag('desktop-entry-icon-failed site=' + site.id + ' ' + e);
         }
         var entry = await ManifestProcessor.generateDesktopEntry(site, iconPath);
@@ -524,7 +556,8 @@
           return { ok: false, error: reason };
         }
         bgDiag('desktop-entry site=' + site.id + ' path=' + res.path +
-          ' bytes=' + res.bytes + ' icon=' + (iconPath || '(app icon)'));
+          ' bytes=' + res.bytes + ' icon=' + (iconPath || '(app icon)') +
+          ' source=' + iconSource);
         return { ok: true, path: res.path, filename: entry.filename, iconPath: iconPath };
       } catch (e) {
         bgDiag('desktop-entry-throw ' + e);
@@ -558,7 +591,8 @@
       }
     },
 
-    // Write an entry for every installed app that does not have one.
+    // Write an entry for every installed app that does not have one, and
+    // UPGRADE an entry whose icon has fallen behind the pipeline.
     //
     // B.4 shipped the writer with both install paths asking for it, and that is
     // only enough for apps installed *after* it: an app installed earlier has a
@@ -572,6 +606,16 @@
     // it is gated on the same pref as install, and it is not gated on removal -
     // turning the feature off must not delete what an earlier version wrote.
     //
+    // 1.0.73 adds the second half of idempotence: an entry that EXISTS is left
+    // alone only while its Icon= is one the pipeline still stands behind. The
+    // pre-1.0.73 writer emitted Icon=rozelynx (the hicolor name whose scalable
+    // slot is the discontinued old logo) for every site without a usable icon,
+    // and Icon=<path> for the rest - so every entry already installed when this
+    // version lands is one upgrade away from the new behaviour, and the
+    // upgrade has to happen by itself, because the only other way to get it
+    // was to uninstall and reinstall each app by hand. That is exactly the
+    // position B.4 was written for, one iteration later.
+    //
     // Every failure is per site and swallowed: a reconcile pass that throws
     // would take the rest of the module's start-up with it, and a PWA with no
     // launcher entry is exactly the state this is here to leave.
@@ -579,6 +623,7 @@
       var written = 0;
       var present = 0;
       var failed = 0;
+      var upgraded = 0;
       try {
         if (!await this.enabled()) {
           bgDiag('desktop-entry-reconcile-skip pref=' + this.PREF);
@@ -600,13 +645,18 @@
           try {
             if (!site) continue;
             var found = await has(pwaDesktopFileName(site));
-            if (found && found.ok && found.exists) {
+            var stale = staleDesktopIcon(found);
+            if (found && found.ok && found.exists && !stale) {
               present++;
               continue;
             }
             var res = await this.write(site);
             if (res && res.ok) {
-              written++;
+              // An entry that was there but stale was rewritten, not
+              // written: the count answers "how many apps got an entry
+              // they did not have" and "how many entries were brought up
+              // to date", which are different questions on different days.
+              if (found && found.ok && found.exists) upgraded++; else written++;
             } else {
               failed++;
               bgDiag('desktop-entry-reconcile-failed site=' + site.id + ' ' +
@@ -619,14 +669,40 @@
           }
         }
         bgDiag('desktop-entry-reconcile sites=' + sites.length +
-          ' written=' + written + ' present=' + present + ' failed=' + failed);
-        return { ok: failed === 0, written: written, present: present, failed: failed };
+          ' written=' + written + ' present=' + present + ' failed=' + failed +
+          ' upgraded=' + upgraded);
+        return { ok: failed === 0, written: written, present: present,
+                 failed: failed, upgraded: upgraded };
       } catch (e) {
         bgDiag('desktop-entry-reconcile-throw ' + e);
         return { ok: false, error: String(e) };
       }
     },
   };
+
+  // Is an existing entry's Icon= one the pipeline still stands behind?
+  // hasDesktopEntry (the parent) reads the entry back and reports its Icon=
+  // value and whether that file is still there. Stale means:
+  //
+  //   * the theme-name fallback - what every pre-1.0.73 entry without a
+  //     usable icon carries, and what resolves to the discontinued logo;
+  //   * an empty Icon= - a blank icon in the launcher, worse than the
+  //     fallback because it shows nothing at all;
+  //   * an absolute path whose file has gone away - a cleaned profile
+  //     directory, a hand-deleted pwa-icons tree.
+  //
+  // A parent that reports NO icon field (an older build, before the
+  // read-back) is deliberately NOT stale: it cannot be known, and rewriting
+  // on a guess would rewrite every entry on every start-up forever. Missing
+  // information is not an upgrade signal.
+  function staleDesktopIcon(found) {
+    if (!found || !found.ok || !found.exists) return false;
+    if (typeof found.icon !== 'string') return false;
+    if (!found.icon || found.icon === DesktopEntry.FALLBACK_ICON) return true;
+    if (found.iconExists === false &&
+        /^(?:\/|[A-Za-z]:[\\/])/.test(found.icon)) return true;
+    return false;
+  }
 
   // --- Generated .desktop entries ---------------------------------------
   // A generated entry launches the app from OUTSIDE the browser, through the
@@ -681,20 +757,311 @@
     return 'rozelynx-pwa-' + pwaSafeName(site) + (id ? '-' + id : '') + '.desktop';
   }
 
-  // The manifest icon only ever exists as a data: URL (ManifestProcessor.
-  // fetchIcon reads it through a FileReader), while both the C++ icon setter
-  // and a .desktop Icon= key want a file on disk. One materialiser serves
-  // both, so the window icon and the launcher icon can never be two
-  // different files. Returns '' for a site with no icon, for a payload that
-  // is not a data: URL, and when the privileged write is unavailable - all
-  // three are normal, not errors.
+  // --- Icon materialisation (v1.0.73) ----------------------------------
+  // Both install paths store the manifest icon as a data: URL, while the C++
+  // icon setter and a .desktop Icon= key both want a file on disk. One
+  // resolver, materialiseIcon, serves every consumer (the entry's Icon=, the
+  // --ssb-icon flag, the taskbar), so a launcher-launched window and an
+  // extension-launched one can never end up with two different files.
+  //
+  // The resolver is a LADDER because the live tree exhibited three distinct
+  // ways for a PWA to launch with a blank icon or the discontinued old logo
+  // while the extension's own PWA list (modules/qr-code/popup.js) kept
+  // rendering the stored favicon happily:
+  //
+  //   1. a manifest icon served as application/octet-stream (or any type
+  //      outside the parent's table) was REFUSED by writeIconFile, so the
+  //      entry fell back to Icon=rozelynx - and the hicolor name's scalable
+  //      slot is the old logo the theme still ships;
+  //   2. an .svg or .webp made it to disk but not through gdk-pixbuf (no
+  //      rsvg/webp loader in the running distro's pixbuf modules), so the
+  //      window icon silently did not change and the .desktop rendered
+  //      blank in DEs that delegate to the same loaders;
+  //   3. a site whose icons live on a CORS-hostile CDN stored icon:null,
+  //      because a content script's fetch is bound by the PAGE's CORS, and
+  //      nothing else had a chance.
+  //
+  // The ladder, each rung fixing one of those:
+  //
+  //   site icon       the stored data: URL, re-encoded through a canvas to
+  //                   PNG first (rung for 2) unless it already is one, and
+  //                   written through the parent, which now sniffs the real
+  //                   bytes instead of trusting the declared type (rung
+  //                   for 1, windows-api.js decodeIconDataUrl);
+  //   candidates      site.iconCandidates - the URLs the content script
+  //                   could NOT read, kept in the site record so THIS page
+  //                   can retry them with the extension's own host
+  //                   permissions (a background fetch is not CORS-bound
+  //                   the way a content script's is - rung for 3);
+  //   favicon         a live tab's favIconUrl for the site's origin - art
+  //                   the browser already resolved, reachable when the
+  //                   whole manifest is unusable;
+  //   fallback         the packaged artwork icons/pwa-fallback.png (the
+  //                   RozeLynx dark-cropped mark, which is what the hicolor
+  //                   'rozelynx' name is NOT anymore), materialised through
+  //                   the same parent write so the entry still gets an
+  //                   absolute path a launcher renders directly;
+  //   none             even the fallback write is unavailable (an old
+  //                   parent, a read-only profile): callers degrade to the
+  //                   theme-name Icon= and a default window icon, exactly
+  //                   as before.
+  //
+  // A candidate or favicon win is persisted back into the site record (as
+  // icon) so the next pass is the fast first rung and the PWA list in the
+  // extension picks the art up - but never the fallback: a site whose own
+  // icon could not be found must not have the browser's brand art stored as
+  // if it were its favicon.
+  //
+  // Every rung answers {path, source}; path is '' only for 'none'. Nothing
+  // here throws: an icon is cosmetic, and no consumer may fail a launch, a
+  // start-up reconcile or a launcher entry over it.
+
+  var FALLBACK_ICON_FILE = 'rozelynx-pwa-fallback';
+
+  function isPngDataUrl(dataUrl) {
+    return /^data:image\/png[;,]/i.test(String(dataUrl || ''));
+  }
+
+  function dataUrlMime(dataUrl) {
+    var m = /^data:([^;,]*)/i.exec(String(dataUrl || ''));
+    return m ? m[1].toLowerCase() : '';
+  }
+
+  // Re-encode an image data: URL as PNG through a canvas: SVG and WebP
+  // become PNG here (which gdk-pixbuf cannot be missing a loader for), and
+  // everything lands on a square canvas so a launcher has no aspect-ratio
+  // decisions to make. A stored PNG passes through untouched - which is also
+  // the only rung that works in a DOM-less sandbox, so the test harness stays
+  // on it deliberately. Answers null for anything this context cannot
+  // decode; the caller then hands the raw URL to the parent, which sniffs.
+  async function normalizeDataUrlToPng(dataUrl) {
+    if (!dataUrl || String(dataUrl).indexOf('data:') !== 0) return null;
+    if (isPngDataUrl(dataUrl)) return String(dataUrl);
+    try {
+      var img = new Image();
+      var loaded = new Promise(function(resolve, reject) {
+        img.onload = function() { resolve(); };
+        img.onerror = function() {
+          reject(new Error('decode failed: ' + dataUrlMime(dataUrl)));
+        };
+      });
+      img.src = dataUrl;
+      await loaded;
+      var nw = img.naturalWidth;
+      var nh = img.naturalHeight;
+      // An SVG with no intrinsic size answers 0x0 and cannot be drawn; the
+      // parent's raw write (and its sniff) is the better answer for it.
+      if (!nw || !nh) return null;
+      // [128, 256]: small favicons are upscaled smoothly (a launcher's
+      // nearest-neighbour 16->128 looks like a bug report), big art is
+      // capped where .desktop icons stop mattering.
+      var side = Math.max(128, Math.min(256, Math.max(nw, nh)));
+      var scale = side / Math.max(nw, nh);
+      var dw = Math.max(1, Math.round(nw * scale));
+      var dh = Math.max(1, Math.round(nh * scale));
+      var canvas = document.createElement('canvas');
+      canvas.width = side;
+      canvas.height = side;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(img, Math.round((side - dw) / 2), Math.round((side - dh) / 2), dw, dh);
+      var out = canvas.toDataURL('image/png');
+      return isPngDataUrl(out) ? out : null;
+    } catch (e) {
+      // No DOM in this context (a sandbox), or the bytes are not decodable;
+      // either way the raw URL is the caller's next question.
+      return null;
+    }
+  }
+
+  // fetch() -> data: URL, for THIS page. host_permissions (*://*/*) carry
+  // this fetch, so a CDN icon a content script could not read for want of
+  // CORS response headers is readable here. Built without FileReader on
+  // purpose: this file also runs in test sandboxes whose FileReader stub
+  // never fires onloadend, and a materialiser that can hang half-way is
+  // worse than one that answers null. arrayBuffer() plus a hand-rolled
+  // base64 cannot hang. No Content-Type is trusted: the parent sniffs the
+  // bytes (decodeIconDataUrl), so a CDN answering application/octet-stream
+  // still lands as the right file type.
+  async function fetchUrlAsDataUrl(url) {
+    try {
+      var resp = await fetch(url);
+      if (!resp || !resp.ok) return null;
+      var buf = await resp.arrayBuffer();
+      var bytes = new Uint8Array(buf);
+      if (!bytes.length) return null;
+      var alphabet =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      var b64 = '';
+      for (var i = 0; i < bytes.length; i += 3) {
+        var b0 = bytes[i];
+        var b1 = i + 1 < bytes.length ? bytes[i + 1] : null;
+        var b2 = i + 2 < bytes.length ? bytes[i + 2] : null;
+        b64 += alphabet[b0 >> 2];
+        b64 += alphabet[((b0 & 3) << 4) | (b1 === null ? 0 : b1) >> 4];
+        b64 += b1 === null ? '=' : alphabet[((b1 & 15) << 2) | (b2 === null ? 0 : b2) >> 6];
+        b64 += b2 === null ? '=' : alphabet[b2 & 63];
+      }
+      return 'data:application/octet-stream;base64,' + b64;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Manifest icon ranking, same shape as the content script's copy:
+  // raster before SVG (an SVG only renders if a canvas can decode it, and
+  // gdk-pixbuf only loads it with an rsvg loader that is not universal),
+  // 'monochrome' entries dropped (they are tinting templates, not art),
+  // size closest to 192 first. The icons arrive already resolved against
+  // the manifest URL (ManifestProcessor.normalize).
+  function rankIconEntries(icons, preferredSize) {
+    preferredSize = preferredSize || 192;
+    var out = [];
+    (icons || []).forEach(function(icon) {
+      if (!icon || !icon.src) return;
+      var purpose = String(icon.purpose || 'any').toLowerCase();
+      if (purpose.split(/\s+/).indexOf('monochrome') >= 0) return;
+      var type = String(icon.type || '').toLowerCase().split(';')[0].trim();
+      var svg = type === 'image/svg+xml' || /\.svgz?([?#]|$)/i.test(String(icon.src));
+      var sizes = [];
+      String(icon.sizes || '').trim().split(/\s+/).forEach(function(tok) {
+        var m = /^(\d+)[xX](\d+)$/.exec(tok);
+        if (m) sizes.push(parseInt(m[1], 10));
+      });
+      var size = sizes.length ? Math.max.apply(null, sizes) : (svg ? preferredSize : 16);
+      out.push({ src: String(icon.src), svg: svg, size: size });
+    });
+    out.sort(function(a, b) {
+      if (a.svg !== b.svg) return a.svg ? 1 : -1;
+      return Math.abs(a.size - preferredSize) - Math.abs(b.size - preferredSize);
+    });
+    return out;
+  }
+
+  // A favicon straight off a live tab of the site's origin: the browser
+  // already resolved one, so this reaches art the manifest never listed
+  // (and keeps working when the manifest's own icons are all CORS-hostile).
+  async function tabFaviconCandidates(site) {
+    var out = [];
+    try {
+      var u = new URL(site.startUrl);
+      var tabs = await browser.tabs.query({ url: ['*://' + u.hostname + '/*'] });
+      (tabs || []).forEach(function(t) {
+        if (t && t.favIconUrl && typeof t.favIconUrl === 'string' &&
+            out.indexOf(t.favIconUrl) < 0) {
+          out.push(t.favIconUrl);
+        }
+      });
+    } catch (e) {}
+    return out;
+  }
+
+  // Write a data: URL through the parent and return the path, or ''.
+  async function writeIconDataUrl(dataUrl, name) {
+    var write = browser.rozelynxWindows && browser.rozelynxWindows.writeIconFile;
+    if (!write || !dataUrl) return '';
+    try {
+      var written = await write(dataUrl, name);
+      if (written && written.ok && written.path) return written.path;
+    } catch (e) {}
+    return '';
+  }
+
+  // The packaged fallback, fetched from the extension's own moz-extension://
+  // URL (same-origin, always readable) and written through the same parent
+  // call as a site icon, so the .desktop Icon= key and the taskbar get an
+  // absolute path instead of a theme name whose scalable slot is the old,
+  // discontinued logo. Cached per event-page lifetime: the start-up
+  // reconcile pass and every PWA launch want it, and the file it writes is
+  // idempotent, so the fetch happens at most once per wake. A failure is
+  // cached too, for the same reason as the SsbHandler probe: retrying an
+  // unavailable resource per call is the load the cache exists to prevent,
+  // and the next wake retries it anyway.
+  var fallbackIconPath = null;
+  function materialiseFallbackIcon() {
+    if (fallbackIconPath) return fallbackIconPath;
+    fallbackIconPath = (async function() {
+      var url = '';
+      try {
+        url = browser.runtime.getURL('icons/pwa-fallback.png');
+      } catch (e) {
+        return '';
+      }
+      var dataUrl = await fetchUrlAsDataUrl(url);
+      if (!dataUrl) return '';
+      return await writeIconDataUrl(dataUrl, FALLBACK_ICON_FILE);
+    })().catch(function() {
+      return '';
+    });
+    return fallbackIconPath;
+  }
+
+  // The one icon resolver. Returns {path, source}; source is which rung
+  // answered, so the diagnostic ring can say why an entry got the art it
+  // got, which is the question the old ring could not answer.
   async function materialiseIcon(site) {
-    var dataUrl = site && site.icon;
-    if (!dataUrl || String(dataUrl).indexOf('data:') !== 0) return '';
-    if (!browser.rozelynxWindows || !browser.rozelynxWindows.writeIconFile) return '';
-    var written = await browser.rozelynxWindows.writeIconFile(dataUrl, site.id);
-    if (!written || !written.ok || !written.path) return '';
-    return written.path;
+    if (!site) return { path: '', source: 'none' };
+    var write = browser.rozelynxWindows && browser.rozelynxWindows.writeIconFile;
+    if (!write) return { path: '', source: 'none' };
+
+    // Rung 1: the stored icon.
+    var storedFailed = false;
+    if (site.icon && String(site.icon).indexOf('data:') === 0) {
+      var norm = await normalizeDataUrlToPng(site.icon);
+      var raw = norm || String(site.icon);
+      var path = await writeIconDataUrl(raw, site.id);
+      if (path) return { path: path, source: 'site' };
+      storedFailed = true;
+    }
+
+    // Rungs 2 and 3: the candidate URLs the content script could not read
+    // (it is CORS-bound; this page is not) and a live tab favicon. A win is
+    // persisted into the site record so the next pass is rung 1 - guarded on
+    // PWAStore.loaded, because merging into a store that has not been read
+    // yet is how one icon wipes every other installed app.
+    var candidates = [];
+    if (Array.isArray(site.iconCandidates)) {
+      site.iconCandidates.forEach(function(c) {
+        if (typeof c === 'string' && c && candidates.indexOf(c) < 0) {
+          candidates.push(c);
+        }
+      });
+    }
+    var faviconUrls = await tabFaviconCandidates(site);
+    candidates = candidates.concat(faviconUrls);
+    for (var i = 0; i < candidates.length; i++) {
+      var c = candidates[i];
+      if (!c) continue;
+      var fetched = null;
+      if (c.indexOf('data:') === 0) {
+        fetched = c;
+      } else if (/^https?:/i.test(c)) {
+        fetched = await fetchUrlAsDataUrl(c);
+      }
+      if (!fetched) continue;
+      var png = await normalizeDataUrlToPng(fetched);
+      var finalUrl = png || fetched;
+      var p = await writeIconDataUrl(finalUrl, site.id);
+      if (!p) continue;
+      // Only a real decode is persisted - the popup renders site.icon
+      // straight into an <img>, and a raw octet-stream URL is not a
+      // promise an <img> tag keeps. Never the fallback: it is not stored
+      // as if it were the site's favicon, and rung 4 does not carry a
+      // data URL here at all.
+      if (png && (storedFailed || !site.icon) && PWAStore.loaded) {
+        try {
+          site.icon = png;
+          PWAStore.addSite(site);
+        } catch (e) {
+          bgDiag('taskbar-icon-persist-failed site=' + site.id + ' ' + e);
+        }
+      }
+      return { path: p, source: 'favicon' };
+    }
+
+    // Rung 4: the packaged fallback art.
+    var fallback = await materialiseFallbackIcon();
+    if (fallback) return { path: fallback, source: 'fallback' };
+    return { path: '', source: 'none' };
   }
 
   // Desktop Entry spec quoting for Exec values: "Arguments may be quoted in
@@ -782,44 +1149,6 @@
         return await response.json();
       } catch (e) {
         console.debug('[RozeLynx PWA] Failed to fetch manifest:', e);
-        return null;
-      }
-    },
-
-    findBestIcon: function(icons, preferredSize) {
-      preferredSize = preferredSize || 192;
-      if (!icons || icons.length === 0) return null;
-      var best = null;
-      var bestDiff = Infinity;
-      icons.forEach(function(icon) {
-        var sizes = [];
-        if (icon.sizes) {
-          sizes = icon.sizes.split(/\s+/).map(function(s) {
-            return parseInt(s.split('x')[0]);
-          });
-        }
-        sizes.forEach(function(size) {
-          var diff = Math.abs(size - preferredSize);
-          if (diff < bestDiff) {
-            bestDiff = diff;
-            best = icon;
-          }
-        });
-      });
-      return best || icons[0];
-    },
-
-    fetchIcon: async function(iconUrl) {
-      try {
-        var response = await fetch(iconUrl);
-        if (!response.ok) return null;
-        var blob = await response.blob();
-        return new Promise(function(resolve) {
-          var reader = new FileReader();
-          reader.onloadend = function() { resolve(reader.result); };
-          reader.readAsDataURL(blob);
-        });
-      } catch (e) {
         return null;
       }
     },
@@ -936,14 +1265,48 @@
         }
 
         var normalized = ManifestProcessor.normalize(manifest, url);
-        var bestIcon = ManifestProcessor.findBestIcon(normalized.icons);
-        var iconDataUrl = null;
 
-        if (bestIcon) {
-          iconDataUrl = await ManifestProcessor.fetchIcon(bestIcon.src);
+        // The manifest icons, ranked (see rankIconEntries), fetched HERE
+        // rather than where the manifest was found: a background fetch
+        // carries the extension's own host permissions, so a CDN icon that
+        // would be unreadable to a content script is readable here. A URL
+        // that still cannot be read is kept in the site record as a
+        // candidate (iconCandidates) so materialiseIcon can retry it later
+        // - and it retries through the same background fetch, so a
+        // transient failure is what candidates are for, not a dead end.
+        // A fetched icon is re-encoded to PNG through the background canvas
+        // (normalizeDataUrlToPng) before it is stored, so the record carries
+        // art every pixbuf build can load, not art a server mislabelled.
+        var iconDataUrl = null;
+        var iconCandidates = [];
+        try {
+          var ranked = rankIconEntries(normalized.icons);
+          for (var ri = 0; ri < ranked.length; ri++) {
+            var fetched = await fetchUrlAsDataUrl(ranked[ri].src);
+            if (!fetched) {
+              iconCandidates.push(ranked[ri].src);
+              continue;
+            }
+            var png = await normalizeDataUrlToPng(fetched);
+            if (!png) {
+              iconCandidates.push(ranked[ri].src);
+              continue;
+            }
+            iconDataUrl = png;
+            break;
+          }
+        } catch (iconErr) {
+          bgDiag('install-icon-error ' + iconErr);
         }
 
         var siteId = ManifestProcessor.generateSiteId(normalized.startUrl);
+        // addSite merges into PWAStore.sites and saves it; a store that has
+        // not been read yet would merge into [] and wipe every other
+        // installed app (see PWAStore.loaded). install() is reached through
+        // a message, which can beat the module's own start-up load.
+        if (!PWAStore.loaded) {
+          await PWAStore.load();
+        }
         var site = {
           id: siteId,
           name: normalized.name,
@@ -955,6 +1318,9 @@
           themeColor: normalized.themeColor,
           backgroundColor: normalized.backgroundColor,
           icon: iconDataUrl,
+          // Only the failures are kept, and only while nothing succeeded:
+          // the list exists for the retry, not as a record of what was tried.
+          iconCandidates: iconDataUrl ? [] : iconCandidates.slice(0, 8),
           installedAt: Date.now(),
           lastUsed: Date.now(),
         };

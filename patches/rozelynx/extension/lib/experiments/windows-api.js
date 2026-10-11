@@ -40,6 +40,23 @@
  * act on. Every entry point answers {ok:false} rather than throwing when the
  * destination is unusable, so a read-only or absent home directory degrades
  * to "the PWA is installed in the browser but has no launcher entry".
+ *
+ * Two v1.0.73 additions, both about the entry's Icon= key:
+ *
+ * writeIconFile now derives the file EXTENSION from the payload's magic
+ * bytes (sniffIconExt) rather than from the declared media type, because a
+ * CDN answering application/octet-stream to a perfectly good PNG was refused
+ * outright and left the entry on the theme-name fallback - whose scalable
+ * slot is the discontinued old logo. The declared type still names the
+ * refusal reason when the bytes cannot be identified either.
+ *
+ * hasDesktopEntry, besides existing/not-existing, now reads the entry back
+ * (readSmallTextFile) and reports the Icon= key's value and whether the file
+ * an absolute value names is still there, as optional icon / iconExists
+ * fields. The extension's reconcile pass uses them to upgrade entries an
+ * earlier writer left on the theme name or on a dead path; a parent that
+ * reports neither field is answered as "cannot be known", never as an
+ * upgrade signal.
  */
 
 this.rozelynxWindows = class extends ExtensionAPI {
@@ -335,17 +352,56 @@ this.rozelynxWindows = class extends ExtensionAPI {
       "image/jpg": ".jpg",
       "image/gif": ".gif",
       "image/webp": ".webp",
+      "image/x-webp": ".webp",
       "image/bmp": ".bmp",
+      "image/x-ms-bmp": ".bmp",
       "image/x-icon": ".ico",
       "image/vnd.microsoft.icon": ".ico",
+      "image/x-ico": ".ico",
+      "image/ico": ".ico",
       "image/svg+xml": ".svg",
     };
+
+    // Magic-byte sniffing for the formats gdk-pixbuf is asked to load, in
+    // file-signature order that cannot confuse one for another (the ICO
+    // prefix is 00 00 01 00, BMP starts "BM", PNG starts 89 50 4E 47).
+    // The data: URL's declared type is whatever a server said, and servers
+    // say application/octet-stream (or text/plain) to perfectly good PNGs;
+    // the bytes are the only part nobody guesses for us. SVG is the one
+    // text format here: optional XML prolog, then markup naming an <svg>
+    // anywhere in the head. Returns null for a payload this cannot
+    // identify - the caller falls back to the declared type, and refuses
+    // when neither yields an extension.
+    function sniffIconExt(bytes) {
+      if (!bytes || !bytes.length) return null;
+      const b = [];
+      for (let i = 0; i < Math.min(16, bytes.length); i++) {
+        b.push(bytes.charCodeAt(i) & 0xff);
+      }
+      if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return ".png";
+      if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return ".jpg";
+      if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return ".gif";
+      if (b[0] === 0x42 && b[1] === 0x4d) return ".bmp";
+      if (b[0] === 0x00 && b[1] === 0x00 && b[2] === 0x01 && b[3] === 0x00) return ".ico";
+      if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+          b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return ".webp";
+      const head = String(bytes).slice(0, 2048).toLowerCase();
+      if (/^[\s\uFEFF\uFFFE\uBBBE\u0000]*</.test(String(bytes).slice(0, 64)) &&
+          head.indexOf("<svg") >= 0) return ".svg";
+      return null;
+    }
 
     // Parse data:[<mediatype>][;params],<payload> and return
     // {ext, bytes}, or null with a reason. Only base64 payloads are accepted:
     // a percent-encoded SVG would be handed to gdk-pixbuf un-decoded, and the
     // icon is only ever read from a data: URL the extension built itself
-    // (ManifestProcessor.fetchIcon reads the manifest icon via FileReader).
+    // (the content script's fetchIconDataUrl reads the manifest icon via a
+    // FileReader; the background's fetchUrlAsDataUrl hand-rolls its base64).
+    // The EXTENSION comes from the bytes first (sniffIconExt) and the
+    // declared type second: a payload sniffed as a PNG answers .png no
+    // matter what the CDN called it, which is the fix for the entry that
+    // fell back to the theme-name icon because writeIconFile refused a
+    // perfectly good icon over its Content-Type.
     function decodeIconDataUrl(dataUrl) {
       const m = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[^,;]*)*),/i.exec(
         String(dataUrl || "")
@@ -354,19 +410,25 @@ this.rozelynxWindows = class extends ExtensionAPI {
         return { error: "not a data: URL" };
       }
       const mime = (m[1] || "").toLowerCase();
-      const ext = ICON_MIME_EXT[mime];
-      if (!ext) {
-        return { error: "unsupported icon type: " + (mime || "(none)") };
-      }
-      if (m[2].toLowerCase().indexOf(";base64") < 0) {
-        return { error: "icon data: URL is not base64: " + mime };
-      }
       const bytes = base64ToBinaryString(dataUrl.slice(m[0].length));
       if (bytes === null) {
         return { error: "icon data: URL payload is not base64" };
       }
       if (!bytes.length) {
         return { error: "icon data: URL payload is empty" };
+      }
+      const sniffed = sniffIconExt(bytes);
+      const ext = sniffed || ICON_MIME_EXT[mime];
+      if (!ext) {
+        return {
+          error:
+            "unsupported icon type: " +
+            (mime || "(none)") +
+            " (no recognisable payload signature)",
+        };
+      }
+      if (m[2].toLowerCase().indexOf(";base64") < 0) {
+        return { error: "icon data: URL is not base64: " + mime };
       }
       return { ext, bytes };
     }
@@ -595,6 +657,85 @@ this.rozelynxWindows = class extends ExtensionAPI {
             onDisk +
             " - the write did not truncate"
         );
+      }
+    }
+
+    // nsIFileInputStream.init takes NSPR ioFlags with the same PR_* values
+    // writeFileBytes spells out; reading is PR_RDONLY (0x01), the only mode
+    // readSmallTextFile uses.
+    const O_RDONLY = 0x01;
+
+    // A cap on the read-back, sized for what this file can legitimately be:
+    // a generated entry is a kilobyte or so of this extension's own writing.
+    // A file at this path that is bigger than the cap is not an entry - it is
+    // something that landed at an entry's path, and dragging a gigabyte
+    // through a string because an Icon= parser asked for it is the failure
+    // mode the cap exists to prevent. Refused by name, via the throw both
+    // callers already turn into a field-less reply.
+    const READ_BACK_CAP = 1 << 20;
+
+    // Read a small text file through the classic input streams. This is the
+    // read half of writeFileBytes' world: hasDesktopEntry reads an entry
+    // back to parse its Icon= key (1.0.73), and a WebExtension still has no
+    // filesystem API, so the parent does this too. nsIScriptableInputStream
+    // wraps the file stream, available() counts what remains, and read()
+    // returns binary-string chunks - the entry's ASCII-compatible syntax
+    // needs no decoding beyond that. Both streams are closed in a finally
+    // (closing the scriptable stream closes the file stream underneath it in
+    // Gecko, and closing again is a no-op), because an unclosed input stream
+    // holds the file open for the whole session exactly like an unclosed
+    // output stream does.
+    function readSmallTextFile(file) {
+      let sis = null;
+      let fis = null;
+      try {
+        fis = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(
+          Ci.nsIFileInputStream
+        );
+        fis.init(file, O_RDONLY, 0o644, 0);
+        sis = Cc["@mozilla.org/scriptableinputstream;1"].createInstance(
+          Ci.nsIScriptableInputStream
+        );
+        sis.init(fis);
+        let out = "";
+        for (;;) {
+          let avail = 0;
+          try {
+            avail = sis.available();
+          } catch (e) {
+            // A stream that went bad mid-read reports what it had; the
+            // caller's parse sees a short entry rather than a hang.
+            break;
+          }
+          if (!avail) {
+            break;
+          }
+          if (out.length + avail > READ_BACK_CAP) {
+            throw new Error(
+              file.path +
+                " is too large to read back (" +
+                out.length +
+                "+" +
+                avail +
+                " bytes, cap " +
+                READ_BACK_CAP +
+                ")"
+            );
+          }
+          out += sis.read(avail);
+        }
+        return out;
+      } finally {
+        try {
+          if (sis) {
+            sis.close();
+          }
+        } catch (e2) {}
+        try {
+          if (fis) {
+            fis.close();
+          }
+        } catch (e3) {}
       }
     }
 
@@ -844,6 +985,15 @@ this.rozelynxWindows = class extends ExtensionAPI {
           // always rewrites, remove always removes. Without it the only way to
           // get an entry for an app installed before the writer existed was to
           // uninstall and reinstall it.
+          //
+          // 1.0.73 grew the read half a second answer: WHAT does its Icon=
+          // key carry, and is that file still there. The extension's
+          // reconcile pass uses it to upgrade entries an earlier writer left
+          // on the theme-name fallback (which resolves to the discontinued old
+          // logo) or on a dead absolute path. The extra fields are optional
+          // on purpose - a parent older than this one reports the entry
+          // exists and nothing else, and the caller treats "not reported" as
+          // "cannot be known", never as an upgrade signal.
           const name = desktopFileName(fileName);
           if (!name) {
             return { ok: false, error: "unusable desktop entry file name" };
@@ -860,7 +1010,42 @@ this.rozelynxWindows = class extends ExtensionAPI {
           } catch (e) {
             return { ok: false, error: "desktop entry stat failed: " + e };
           }
-          return { ok: true, path: file.path, name: name, exists: exists };
+          if (!exists) {
+            return { ok: true, path: file.path, name: name, exists: false };
+          }
+          // Parse the Icon= value out of the entry. A read failure omits the
+          // field (an unknown answer) rather than failing the whole lookup -
+          // an entry that exists is still an answer to the primary question.
+          let icon;
+          try {
+            const text = readSmallTextFile(file);
+            const m = /^Icon=(.*)$/m.exec(text);
+            icon = m ? m[1].trim() : "";
+          } catch (e) {
+            icon = undefined;
+          }
+          // Is the file the Icon= names still there? Only asked for an
+          // absolute path: a theme NAME cannot be stat'ed by this sandbox and
+          // is resolved by the DE, not by us. iconExists is reported only
+          // when it was actually asked.
+          let iconExists;
+          if (typeof icon === "string" && icon &&
+              /^(?:\/|[A-Za-z]:[\\/])/.test(icon)) {
+            try {
+              const iconFile = Cc["@mozilla.org/file/local;1"].createInstance(
+                Ci.nsIFile
+              );
+              iconFile.initWithPath(icon);
+              iconExists = iconFile.exists();
+            } catch (e) {
+              iconExists = undefined;
+            }
+          }
+          return Object.assign(
+            { ok: true, path: file.path, name: name, exists: true },
+            icon === undefined ? {} : { icon: icon },
+            iconExists === undefined ? {} : { iconExists: iconExists }
+          );
         },
 
         async removeDesktopEntry(fileName) {

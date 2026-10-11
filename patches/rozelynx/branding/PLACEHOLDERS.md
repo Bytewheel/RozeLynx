@@ -328,6 +328,35 @@ without it installs what it installed before. The branding harness asserts
 the *source* of the 64px, launcher and favicon slots, not just that each
 file was written.
 
+### Raster artwork added 2026-10-11
+
+| Source | Slot | Notes |
+|---|---|---|
+| `dark-cropped-transparent.png` (447x443, transparent) | `extension/icons/pwa-fallback.png` — the PWA fallback art | shipped at native resolution and `-strip`'d, no resample |
+
+The source is `~/Documents/hawksnestsoftware/marketing/RozeLynx/dark-cropped-transparent.png`
+(the hawksnest marketing checkout; the earlier rows in this document name the
+ByteWheel marketing path, which no longer exists on this machine).
+
+This is the PWA fallback, and it is deliberately *not* wired through the
+hicolor theme: a generated `.desktop` entry used to fall back to
+`Icon=rozelynx`, and the theme's `scalable/apps/rozelynx.svg` slot is the
+**discontinued old logo** — so a PWA without a usable icon launched with
+the old logo in the launcher and the default mark in the taskbar. The
+extension (`modules/pwa/background.js`, v1.0.73) now materialises a *file*
+before ever emitting a theme name: the site icon, a stored candidate URL,
+a live tab favicon, and then this artwork, written through the parent
+(`rozelynxWindows.writeIconFile`) into `<profile>/pwa-icons/rozelynx-pwa-fallback.png`
+so the entry's `Icon=` and the taskbar both get an absolute path a desktop
+renders directly. The `rozelynx` theme name survives only as the last resort
+of a parent that cannot write files at all, and the extension's own
+`hasDesktopEntry` read-back lets the start-up reconcile pass *upgrade*
+entries an earlier version left on the theme name.
+
+Because the fallback rides inside the extension, no ebuild or distro-script
+change is involved: `assemble-extension.py` copies `icons/` wholesale, so
+the drop-in file name above is the whole contract.
+
 ### Current vector sources (still the old rose mark)
 
 `icon/rozelynx.svg`, `icon/rozelynx-wordmark.svg` and `icon/rozelynx-symbolic.svg`
