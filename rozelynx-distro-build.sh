@@ -503,18 +503,6 @@ stage_prepare() {
 
     cd "${BUILD_SRC}" || die "source tree missing: ${BUILD_SRC} (run the prepare stage first)"
 
-    # toolchain fixes: GCC-16 libstdc++ no longer leaks the C math
-    # functions into the global namespace in C++; upstream 156 has
-    # unqualified calls.  Regular TUs get std::-qualified forms (the
-    # siblings elsewhere are already qualified); the vendored pipewire
-    # json-core.h is also included by the libwebrtc gn TUs, where glibc's
-    # math.h macros precede libstdc++ cmath and would even rewrite the
-    # token inside std::isnormal - so there the compiler builtins are
-    # used directly, which work in both C and C++.
-    apply_one_patch "${SRC_ROOT}/root-patches/media-capabilities-std-isfinite.patch" -p1
-    apply_one_patch "${SRC_ROOT}/root-patches/webtransport-std-isnan.patch" -p1
-    apply_one_patch "${SRC_ROOT}/root-patches/pipewire-json-math-builtins.patch" -p1
-
     local FILES="${SRC_ROOT}"
 
     # --- RozeLynx sequence (mirrors the rozelynx block of src_prepare) ---
@@ -1036,7 +1024,7 @@ stage_configure() {
     local backends=""
     use jack && backends+="jack,"
     use sndio && backends+="sndio,"
-    use pulseaudio && backends+="pulseaudio,"
+    use pulseaudio && backends+="pulse,"
     use pulseaudio || backends+="alsa,"
     add_ac "--enable-audio-backends=${backends%,}"
 
@@ -1086,12 +1074,9 @@ stage_configure() {
     fi
 
     # relocatable rpath: $ORIGIN works for system installs, AppImage,
-    # Flatpak (/app) and snap ($SNAP) alike because the libs sit next to the
-    # binary.  The $ORIGIN must be single-quoted: mach configure (156+)
-    # shell-splits LDFLAGS with mozshellutil, which rejects unquoted
-    # metacharacters (MetaCharacterException), and the build system's
-    # make_quote(shell_quote()) pipeline re-quotes it correctly at link time.
-    export LDFLAGS="${LDFLAGS:-} -Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags"
+    # Flatpak (/app) and snap ($SNAP) alike because the libs sit next to
+    # the binary.
+    export LDFLAGS="${LDFLAGS:-} -Wl,-rpath,\$ORIGIN -Wl,--enable-new-dtags"
 
     {
         echo "mk_add_options MOZ_OBJDIR=${OBJDIR}"
@@ -1419,11 +1404,6 @@ EOF
         # --- desktop file + launcher ---
         log "installing desktop file + launcher"
         mkdir -p "${STAGE}${PREFIX}/share/applications" "${STAGE}${PREFIX}/bin"
-        # mach install leaves usr/bin/<app> as a symlink to the ABSOLUTE
-        # /usr/<libdir>/rozelynx/rozelynx path; writing the real launcher
-        # through it would escape the staging tree (and clobber a live
-        # system file when running as root).  Remove it first.
-        rm -f "${STAGE}${PREFIX}/bin/rozelynx"
         sed -e 's#^Icon=.*#Icon=rozelynx#' \
             "${SRC_ROOT}/rozelynx/icon/rozelynx.desktop" \
             > "${STAGE}${PREFIX}/share/applications/rozelynx.desktop"
