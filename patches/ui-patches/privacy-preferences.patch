@@ -197,8 +197,8 @@ index 8e0e6d5..9ac14aa 100644
 -        l10nId: "data-collection",
 -        control: "moz-fieldset",
 -        iconSrc: "chrome://global/skin/icons/trending.svg",
+-        headingLevel: 2,
 -        controlAttrs: {
--          headinglevel: 2,
 -          "data-l10n-attrs": "searchkeywords",
 -        },
 -        items: [

@@ -141,14 +141,12 @@ index f8d0e2ce84f0..6d8d01a94542 100644
 diff --git a/browser/modules/moz.build b/browser/modules/moz.build
 --- a/browser/modules/moz.build
 +++ b/browser/modules/moz.build
-@@ -150,10 +150,12 @@
- MOZ_SRC_FILES += [
-     "CanvasPermissionPromptHelper.sys.mjs",
+@@ -159,3 +159,4 @@
      "ContextId.sys.mjs",
 +    "EMEPermissionPrompt.sys.mjs",
      "ObserverForwarder.sys.mjs",
      "PrivateBrowsingUI.sys.mjs",
-     "SerialDeviceSharingHelper.sys.mjs",
+@@ -164,3 +165,4 @@
 +    "WebGLPermissionPromptHelper.sys.mjs",
  ]
  

@@ -770,7 +770,14 @@ PWAMOZ
            "${ni_src}/"*.conf "${ni_src}/moz.build" \
            netwerk/base/rozelynx-netiface/
         sed -i '/"url-classifier",/a\    "base/rozelynx-netiface",' netwerk/moz.build
-        apply_one_patch "${ni_src}/net-iface-necko.patch" -p1
+        if ver_ge "${FIREFOX_VERSION}" 157.0; then
+            # FF157: nsHttpConnectionInfo replaced SetHttp3Disabled(bool)
+            # with SetHttp3Policy(Http3Policy) — v12 h3 opt-out call sites
+            # use the policy enum in the 157 fork.
+            apply_one_patch "${ni_src}/net-iface-necko-157.patch" -p1
+        else
+            apply_one_patch "${ni_src}/net-iface-necko.patch" -p1
+        fi
         # RozeLynx v14: WebRTC ICE follows the interface assignment
         # (SO_BINDTODEVICE on the mtransport sockets, bound STUN/TURN DNS,
         # socket-process tab-map replica, per-interface host candidates).
@@ -909,7 +916,7 @@ PWAMOZ
     find third_party -type f \( -name '*.so' -o -name '*.o' \) -delete >/dev/null || true
 
     local _v
-    for _v in glslopt encoding_rs; do
+    for _v in glslopt encoding_rs bindgen; do
         local ck="third_party/rust/${_v}/.cargo-checksum.json"
         if [[ -f ${ck} ]]; then
             sed -i -e 's/\("files":{\)[^}]*/\1/' "${ck}"
@@ -966,7 +973,6 @@ stage_configure() {
     add_ac "--disable-parental-controls"
     add_ac "--disable-strip"
     add_ac "--disable-updater"
-    add_ac "--disable-wmf"
     add_ac "--enable-negotiateauth"
     add_ac "--enable-new-pass-manager"
     add_ac "--enable-packed-relative-relocs"

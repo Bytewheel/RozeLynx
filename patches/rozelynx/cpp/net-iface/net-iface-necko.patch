@@ -1939,33 +1939,12 @@ diff --git a/netwerk/protocol/http/TLSTransportLayer.h b/netwerk/protocol/http/T
 index ddf65d0b2e..e4bb944e08 100644
 --- a/netwerk/protocol/http/TLSTransportLayer.h
 +++ b/netwerk/protocol/http/TLSTransportLayer.h
-@@ -145,17 +145,18 @@ class TLSTransportLayer final : public nsISocketTransport,
-   static PRStatus Close(PRFileDesc* fd);
-   static int16_t Poll(PRFileDesc* fd, int16_t in_flags, int16_t* out_flags);
- 
--  nsCOMPtr<nsISocketTransport> mSocketTransport;
--  InputStreamWrapper mSocketInWrapper;
--  OutputStreamWrapper mSocketOutWrapper;
--  nsCOMPtr<nsITLSSocketControl> mTLSSocketControl;
--  nsCOMPtr<nsIInputStreamCallback> mInputCallback;
--  nsCOMPtr<nsIOutputStreamCallback> mOutputCallback;
--  PRFileDesc* mFD{nullptr};
--  nsCOMPtr<nsIInputStreamCallback> mOwner;
--  nsresult mOutputStatus{NS_OK};
--  nsresult mInputStatus{NS_OK};
--};
-+   nsCOMPtr<nsISocketTransport> mSocketTransport;
-+   InputStreamWrapper mSocketInWrapper;
-+   OutputStreamWrapper mSocketOutWrapper;
-+   nsCOMPtr<nsITLSSocketControl> mTLSSocketControl;
-+   nsCOMPtr<nsIInputStreamCallback> mInputCallback;
-+   nsCOMPtr<nsIOutputStreamCallback> mOutputCallback;
-+   PRFileDesc* mFD{nullptr};
-+   nsCOMPtr<nsIInputStreamCallback> mOwner;
-+   nsresult mOutputStatus{NS_OK};
-+   nsresult mInputStatus{NS_OK};
-+   nsCString mBindIface;
-+ };
+@@ -160,6 +160,7 @@ class TLSTransportLayer final : public nsISocketTransport,
+   nsCOMPtr<nsIInputStreamCallback> mOwner;
+   nsresult mOutputStatus{NS_OK};
+   nsresult mInputStatus{NS_OK};
++  nsCString mBindIface;
+ };
  
  }  // namespace mozilla::net
  

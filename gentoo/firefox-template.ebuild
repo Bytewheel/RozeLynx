@@ -1770,7 +1770,11 @@ PWAMOZ
 			"${S}/netwerk/base/rozelynx-netiface/" || die
 		sed -i '/"url-classifier",/a\    "base/rozelynx-netiface",' \
 			"${S}/netwerk/moz.build" || die
-		eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-necko.patch" || die
+		if ver_test ${PV} -ge 157.0; then
+			eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-necko-157.patch" || die
+		else
+			eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-necko.patch" || die
+		fi
 		# v14 webrtc: WebRTC ICE follows the interface assignment - nICEr
 		# opens its own PR sockets and resolved STUN/TURN names through a
 		# null-AdditionalInfo AsyncResolveNative, so a bound tab still
@@ -1969,6 +1973,7 @@ PWAMOZ
 	find "${S}"/third_party -type f \( -name '*.so' -o -name '*.o' \) -print -delete || die
 	moz_clear_vendor_checksums glslopt
 	moz_clear_vendor_checksums encoding_rs
+	moz_clear_vendor_checksums bindgen
 
 	if [[ -n ${FILES_PER_UNIFIED_FILE} ]] && use jumbo-build; then
 		local my_files_per_unified_file=${FILES_PER_UNIFIED_FILE:=16}
@@ -2025,7 +2030,7 @@ src_configure() {
 	mozconfig_add_options_ac 'Gentoo default' \
 		--allow-addon-sideload --disable-cargo-incremental --disable-crashreporter --disable-disk-remnant-avoidance \
 		--disable-geckodriver --disable-install-strip --disable-legacy-profile-creation --disable-parental-controls \
-		--disable-strip --disable-updater --disable-wmf --enable-negotiateauth --enable-new-pass-manager \
+		--disable-strip --disable-updater --enable-negotiateauth --enable-new-pass-manager \
 		--enable-official-branding --enable-packed-relative-relocs --enable-release --enable-system-policies \
 		--host="x86_64-unknown-linux-gnu" --libdir="${EPREFIX}/usr/$(get_libdir)" --prefix="${EPREFIX}/usr" \
 		--target="x86_64-unknown-linux-gnu" --without-ccache --with-intl-api --with-libclang-path="$(llvm-config --libdir)" \
