@@ -2,20 +2,17 @@ diff --git a/browser/base/content/popup-notifications.inc.xhtml b/browser/base/c
 index cb57017aa9..c982089198 100644
 --- a/browser/base/content/popup-notifications.inc.xhtml
 +++ b/browser/base/content/popup-notifications.inc.xhtml
-@@ -168,6 +168,13 @@
+@@ -343,4 +343,10 @@
+         <html:div class="passport-capture-content">
+         </html:div>
        </popupnotificationcontent>
      </popupnotification>
- 
 +    <popupnotification id="webgl-permissions-prompt-notification" hidden="true">
 +      <popupnotificationcontent orient="vertical">
 +        <description class="popup-notification-description"/>
 +        <label id="webgl-permissions-prompt-warning"/>
 +      </popupnotificationcontent>
 +    </popupnotification>
-+
-     <popupnotification id="contextual-feature-recommendation-notification"
-                        buttonhighlight="true"
-                        hidden="true">
 diff --git a/browser/modules/ObserverForwarder.sys.mjs b/browser/modules/ObserverForwarder.sys.mjs
 index 8cf14355f3..bdecc6c230 100644
 --- a/browser/modules/ObserverForwarder.sys.mjs

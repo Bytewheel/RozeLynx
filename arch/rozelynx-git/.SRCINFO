@@ -51,12 +51,14 @@ pkgbase = rozelynx-git
 	depends = mesa
 	depends = nspr>=4.39
 	depends = nss>=3.125
+	depends = pam
 	depends = pango
 	depends = pixman
 	depends = zlib
 	optdepends = libva: VAAPI hardware video decoding
 	optdepends = networkmanager: geolocation via nearby Wi-Fi networks (necko-wifi)
 	optdepends = vulkan-icd-loader: Vulkan rendering (hwaccel vulkantest)
+	optdepends = howdy: face recognition for local passkeys (pam-passkeys; password prompt is the fallback)
 	provides = rozelynx=156.0.1
 	conflicts = rozelynx
 	source = rozelynx-git::git+https://github.com/Bytewheel/RozeLynx.git#branch=main

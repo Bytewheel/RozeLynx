@@ -7,9 +7,9 @@
 
 EAPI=8
 
-FIREFOX_PATCHSET="firefox-157-patches-01.tar.xz"
+FIREFOX_PATCHSET="firefox-158-patches-01.tar.xz"
 
-LLVM_COMPAT=( 22 )
+LLVM_COMPAT=( 22 23 )
 
 RUST_NEEDS_LLVM=1
 RUST_MIN_VER=1.90.0
@@ -48,7 +48,7 @@ MOZ_PV_DISTFILES="${MOZ_PV}${MOZ_PV_SUFFIX}"
 MOZ_P_DISTFILES="${MOZ_PN}-${MOZ_PV_DISTFILES}"
 
 inherit check-reqs desktop flag-o-matic gnome2-utils linux-info llvm-r1 multiprocessing \
-	optfeature pax-utils python-any-r1 readme.gentoo-r1 rust toolchain-funcs virtualx xdg
+	optfeature pam pax-utils python-any-r1 readme.gentoo-r1 rust toolchain-funcs virtualx xdg
 
 MOZ_SRC_BASE_URI="https://archive.mozilla.org/pub/${MOZ_PN}/releases/${MOZ_PV}"
 
@@ -76,7 +76,7 @@ IUSE="+clang dbus debug eme-free hardened hwaccel jack libproxy pgo pulseaudio s
 IUSE+=" +system-av1 +system-harfbuzz +system-icu +system-jpeg +system-libevent +system-libvpx"
 IUSE+=" system-pipewire system-png +system-webp test valgrind wayland wifi +X"
 
-IUSE+=" +gmp-autoupdate gnome-shell jpegxl +jumbo-build openh264 +telemetry wasm-sandbox"
+IUSE+=" +gmp-autoupdate gnome-shell +jumbo-build openh264 +telemetry wasm-sandbox"
 
 # LibreWolf-style privacy hardening USE flags (from parent ebuild):
 IUSE+=" remove-safebrowsing remove-pocket remove-password-manager"
@@ -99,12 +99,17 @@ IUSE+=" language-packs xdg-profile newtab-fixes"
 # lepton-skin:        Compact Lepton UI theme CSS
 # ip-protection:      IP protection privacy UI overrides
 # net-iface:         Per-tab / per-container / per-profile interface pinning
+# pam-passkeys:      Local WebAuthn passkeys whose user verification runs
+#                    through PAM - howdy face authentication first, the
+#                    account password as fallback (USB security keys keep
+#                    working; everything the local authenticator cannot
+#                    serve is forwarded to them)
 # download-handoff:  Hand downloads off to a configured download manager
 #                     (any extension that answers, any program on PATH, or
 #                     the built-in uGet integrator) before the save UI
 IUSE+=" rozelynx rozelynx-debug chrome-web-store experiments external-browser"
 IUSE+=" i18n mouse-gestures qr-code pwa lepton-skin ip-protection net-iface"
-IUSE+=" download-handoff"
+IUSE+=" download-handoff pam-passkeys"
 
 REQUIRED_USE="|| ( X wayland )
 	debug? ( !system-av1 )
@@ -122,6 +127,7 @@ REQUIRED_USE="|| ( X wayland )
 	ip-protection? ( rozelynx )
 	pwa? ( rozelynx )
  	net-iface? ( rozelynx )
+	pam-passkeys? ( rozelynx )
 	download-handoff? ( rozelynx )
  "
 
@@ -145,7 +151,7 @@ BDEPEND="${PYTHON_DEPS}
 	app-arch/zip
 	>=dev-util/cbindgen-0.29.4
 	rozelynx? ( media-gfx/imagemagick )
-	net-libs/nodejs
+	net-libs/nodejs[ssl]
 	virtual/pkgconfig
 	amd64? ( >=dev-lang/nasm-2.14 )
 	x86? ( >=dev-lang/nasm-2.14 )
@@ -164,7 +170,7 @@ COMMON_DEPEND="${FF_ONLY_DEPEND}
 	>=app-accessibility/at-spi2-core-2.46.0:2
 	dev-libs/glib:2
 	dev-libs/libffi:=
-	>=dev-libs/nss-3.125
+	>=dev-libs/nss-3.130
 	>=dev-libs/nspr-4.39
 	media-libs/alsa-lib
 	media-libs/fontconfig
@@ -181,6 +187,7 @@ COMMON_DEPEND="${FF_ONLY_DEPEND}
 	dbus? (
 		sys-apps/dbus
 	)
+	pam-passkeys? ( sys-libs/pam )
 	jack? ( virtual/jack )
 	pulseaudio? (
 		|| (
@@ -554,9 +561,6 @@ src_prepare() {
 		_lw_patch_ver=legacy
 	fi
 
-	if [[ ${use_lto} == "yes" ]]; then
-		rm -v "${WORKDIR}"/firefox-patches/*-LTO-Only-enable-LTO-*.patch || die
-	fi
 	if use elibc_glibc ; then
 		rm -v "${WORKDIR}"/firefox-patches/*bgo-748849-RUST_TARGET_override.patch || die
 		rm -v "${WORKDIR}"/firefox-patches/*bgo-967694-musl-prctrl-exception-on-musl.patch || die
@@ -1770,7 +1774,9 @@ PWAMOZ
 			"${S}/netwerk/base/rozelynx-netiface/" || die
 		sed -i '/"url-classifier",/a\    "base/rozelynx-netiface",' \
 			"${S}/netwerk/moz.build" || die
-		if ver_test ${PV} -ge 157.0; then
+		if ver_test ${PV} -ge 158.0; then
+			eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-necko-158.patch" || die
+		elif ver_test ${PV} -ge 157.0; then
 			eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-necko-157.patch" || die
 		else
 			eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-necko.patch" || die
@@ -1807,6 +1813,25 @@ PWAMOZ
 		# first TCP connection. The extension's MV3 event-page rebind wakes a
 		# beat too late and the first load egresses the profile default.
 		eapply "${FILESDIR}/rozelynx/cpp/net-iface/net-iface-sessionrestore.patch" || die
+	fi
+
+	# --- RozeLynx pam-passkeys: local WebAuthn platform authenticator whose
+	# user verification runs through PAM (howdy face auth first, account
+	# password fallback); USB security keys keep working via authrs_bridge ---
+	if use pam-passkeys; then
+		if ver_test ${PV} -ge 156.0; then
+			einfo "Applying PAM passkey platform authenticator (howdy + password)..."
+			mkdir -p "${S}/dom/webauthn/rozelynx-pam" || die
+			cp "${FILESDIR}/rozelynx/cpp/webauthn-pam/"*.cpp \
+				"${FILESDIR}/rozelynx/cpp/webauthn-pam/"*.h \
+				"${FILESDIR}/rozelynx/cpp/webauthn-pam/moz.build" \
+				"${S}/dom/webauthn/rozelynx-pam/" || die
+			eapply "${FILESDIR}/rozelynx/cpp/webauthn-pam/webauthn-pam-service.patch" || die
+			eapply "${FILESDIR}/rozelynx/cpp/webauthn-pam/webauthn-pam-prompt-helper.patch" || die
+			eapply "${FILESDIR}/rozelynx/cpp/webauthn-pam/webauthn-pam-static-prefs.patch" || die
+		else
+			ewarn "pam-passkeys needs >=firefox-156 (dom/webauthn layout); skipping"
+		fi
 	fi
 
 	# --- Toolchain compatibility: GCC 16 / libstdc++ 16 <cmath> ---
@@ -1858,7 +1883,11 @@ PWAMOZ
 		eapply "${FILESDIR}/librewolf/remove-pingsender.patch"
 	fi
 	if use remove-openai; then
-		eapply "${FILESDIR}/librewolf/remove-openai.patch"
+		if ver_test ${PV} -ge 158.0; then
+			eapply "${FILESDIR}/librewolf/remove-openai-158.patch"
+		else
+			eapply "${FILESDIR}/librewolf/remove-openai.patch"
+		fi
 	fi
 	if use webgl-permission; then
 		eapply "${FILESDIR}/librewolf/webgl-permission.patch"
@@ -1920,7 +1949,11 @@ PWAMOZ
 			einfo "  Skipping firefox-view.patch (upstreamed in 154)"
 		fi
 		eapply "${FILESDIR}/librewolf/ui-patches/handlers.patch"
-		eapply "${FILESDIR}/librewolf/ui-patches/neterror.patch"
+		if ver_test ${PV} -ge 158.0; then
+			eapply "${FILESDIR}/librewolf/ui-patches/neterror-158.patch"
+		else
+			eapply "${FILESDIR}/librewolf/ui-patches/neterror.patch"
+		fi
 		eapply "${FILESDIR}/librewolf/ui-patches/pref-naming.patch"
 		eapply "${FILESDIR}/librewolf/ui-patches/home-preferences.patch"
 		eapply "${FILESDIR}/librewolf/ui-patches/trustpanel.patch"
@@ -2105,7 +2138,6 @@ src_configure() {
 		mozconfig_add_options_ac 'no wasm-sandbox' --without-wasm-sandboxed-libraries
 		mozconfig_use_with system-harfbuzz system-graphite2
 	fi
-	! use jpegxl && mozconfig_add_options_ac '-jpegxl' --disable-jxl
 
 	if [[ ${use_lto} == "yes" ]] ; then
 		if use clang ; then
@@ -2234,6 +2266,11 @@ src_install() {
 		einfo "Installing RozeLynx system preferences..."
 		insinto "${PREFS_DIR}"
 		newins "${FILESDIR}/rozelynx/prefs/rozelynx-prefs.js" rozelynx-prefs.js
+	fi
+
+	if use pam-passkeys; then
+		einfo "Installing RozeLynx PAM passkey service (/etc/pam.d/rozelynx)..."
+		newpamd "${FILESDIR}/rozelynx/cpp/webauthn-pam/rozelynx.pam" rozelynx
 	fi
 
 	if use hwaccel ; then
@@ -2620,12 +2657,6 @@ SSBEOF
 		EOF
 	fi
 
-	if use jpegxl ; then
-		cat >>"${GENTOO_PREFS}" <<-EOF || die
-		pref("image.jxl.enabled", true);
-		EOF
-	fi
-
 	readme.gentoo_create_doc
 }
 
@@ -2722,6 +2753,15 @@ pkg_postinst() {
 			elog "  scheme handler:        rozelynx-ext: (launcher: ${MOZILLA_FIVE_HOME}/open-external)"
 			elog "  activity log:          /tmp/rozelynx-open-external.log"
 		fi
+		if use pam-passkeys; then
+			elog "PAM passkeys (local platform authenticator) enabled!"
+			elog "  WebAuthn passkey prompts now offer this device next to USB security"
+			elog "  keys; user verification runs through PAM: face recognition via"
+				elog "  howdy when ${EROOT%/}/etc/pam.d/rozelynx or the system-auth chain"
+				elog "  carries pam_howdy.so, otherwise the account password prompt."
+				elog "  Disable at runtime: security.webauthn.rozelynx_pam.enabled"
+				elog "  USB/NFC security keys keep working in every case."
+		fi
 		elog ""
 		elog "Available USE flags for features:"
 		elog "  chrome-web-store   - Install extensions from Chrome Web Store"
@@ -2733,6 +2773,9 @@ pkg_postinst() {
 		elog "  pwa                - Progressive Web App support"
 		elog "  lepton-skin        - Compact Lepton UI theme"
 		elog "  ip-protection      - IP protection privacy overrides"
+		elog "  net-iface          - Per-tab network interface pinning"
+		elog "  pam-passkeys       - Local passkeys via PAM (howdy / password)"
+		elog "  download-handoff   - Hand downloads to an external manager"
 		elog ""
 	fi
 

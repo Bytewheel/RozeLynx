@@ -1,0 +1,119 @@
+RozeLynx pam-passkeys: browser-side prompts for the PAM platform
+authenticator.
+
+The authenticator fires the regular "webauthn-prompt" observer JSON with
+three new prompt types while a PAM verification runs:
+- "rozelynx-pam-verify": a doorhanger ("look at the camera or wait for the
+  password prompt") with a cancel button, shown while howdy grabs the camera;
+- "rozelynx-pam-password": the PAM conversation asked for a secret - a
+  password dialog (promptPasswordBC) whose answer goes back through
+  nsIWebAuthnService::pinCallback, cancel through ::cancel;
+- "rozelynx-pam-select-authenticator": registration with an open attachment
+  asks where to save the passkey: this device (face/password) or a USB
+  security key; the choice arrives through ::selectionCallback.
+
+The "cancel" prompt type (already handled) clears the doorhangers when the
+PAM transaction finishes.
+
+--- a/toolkit/modules/WebAuthnPromptHelper.sys.mjs
++++ b/toolkit/modules/WebAuthnPromptHelper.sys.mjs
+@@ -75,6 +75,18 @@
+       this.pin_required(browsingContext, false, data);
+     } else if (data.prompt.type == "pin-invalid") {
+       this.pin_required(browsingContext, true, data);
++    } else if (data.prompt.type == "rozelynx-pam-select-authenticator") {
++      this.rozelynx_pam_select(browsingContext, data);
++    } else if (data.prompt.type == "rozelynx-pam-verify") {
++      this.show_info(
++        browsingContext,
++        data.origin,
++        data.tid,
++        "rozelynxPamVerify",
++        "webauthn-rozelynx-pam-verify-prompt"
++      );
++    } else if (data.prompt.type == "rozelynx-pam-password") {
++      this.rozelynx_pam_password(browsingContext, data);
+     } else if (data.prompt.type == "select-sign-result") {
+       this.select_sign_result(browsingContext, data);
+     } else if (data.prompt.type == "already-registered") {
+@@ -193,6 +205,63 @@
+     return res;
+   },
+ 
++  // RozeLynx PAM passkeys: pick between the local platform
++  // authenticator (howdy face authentication / password) and the USB
++  // security key bridge for a registration.
++  rozelynx_pam_select(browsingContext, { origin, tid }) {
++    let [deviceLabel, usbLabel] = this._l10n.formatValuesSync([
++      "webauthn-rozelynx-pam-select-device",
++      "webauthn-rozelynx-pam-select-usb",
++    ]);
++    let secondaryActions = [
++      {
++        label: deviceLabel,
++        accessKey: "0",
++        callback() {
++          lazy.webauthnService.selectionCallback(tid, 0);
++        },
++      },
++      {
++        label: usbLabel,
++        accessKey: "1",
++        callback() {
++          lazy.webauthnService.selectionCallback(tid, 1);
++        },
++      },
++    ];
++    let mainAction = this.buildCancelAction(tid);
++    let options = { escAction: "buttoncommand" };
++    this.show(
++      browsingContext,
++      tid,
++      "rozelynx-pam-select",
++      "webauthn-rozelynx-pam-select-prompt",
++      origin,
++      mainAction,
++      secondaryActions,
++      options
++    );
++  },
++
++  rozelynx_pam_password(browsingContext, { origin, tid }) {
++    let aPassword = Object.create(null);
++    let dialogText = this._l10n.formatValueSync(
++      "webauthn-rozelynx-pam-password-prompt"
++    );
++    let res = Services.prompt.promptPasswordBC(
++      browsingContext,
++      Services.prompt.MODAL_TYPE_TAB,
++      origin,
++      dialogText,
++      aPassword
++    );
++    if (res) {
++      lazy.webauthnService.pinCallback(tid, aPassword.value);
++    } else {
++      lazy.webauthnService.cancel(tid);
++    }
++  },
++
+   select_sign_result(browsingContext, { origin, tid, prompt: { entities } }) {
+     let unknownAccount = this._l10n.formatValueSync(
+       "webauthn-select-sign-result-unknown-account"
+--- a/toolkit/locales/en-US/toolkit/webauthnDialog.ftl
++++ b/toolkit/locales/en-US/toolkit/webauthnDialog.ftl
+@@ -92,3 +92,14 @@
+ #   $origin (String): the domain of the site making the request
+ #   $rpId (String): the related domain the passkey is associated with
+ webauthn-related-origin-use-header = { $origin } wants to use a passkey for { $rpId }.
++
++# RozeLynx PAM passkeys (local platform authenticator)
++# Variables:
++#  $hostname (String): the origin (website) asking for verification.
++webauthn-rozelynx-pam-verify-prompt = Look at the camera or wait for the password prompt to continue with { $hostname }.
++webauthn-rozelynx-pam-password-prompt = Enter your account password to continue.
++# Variables:
++#  $hostname (String): the origin (website) asking to create a passkey.
++webauthn-rozelynx-pam-select-prompt = { $hostname } wants to create a passkey. Choose where to save it:
++webauthn-rozelynx-pam-select-device = This device (face recognition / password)
++webauthn-rozelynx-pam-select-usb = USB security key

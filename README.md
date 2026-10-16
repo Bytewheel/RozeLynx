@@ -18,7 +18,7 @@ Lynxes are stronger and more dangerous than foxes. RozeLynx is beautiful, but sh
 <em>RozeLynx in action — <a href="https://www.instagram.com/reel/DeSi2y-unz7/">watch the demo reel</a> (sound on!).</em>
 </p>
 
-RozeLynx adds enhanced PWA support, modern download handoff support (well, sort of. Tested with uGet. Testers/PRs welcome!), and the pièce de résistance, per-tab network interface binding. No more redoing VPN split tunnel clients. You can set profile defaults for interfaces, and switch interface per tab on the fly. PLEASE BE CAREFUL. We made great pains preventing leaks, using DNS over HTTPS (DoH), but it is advised to treat this as alpha-stage software. We recommend users to run leak checks with tcpdump or Wireshark, before doing anything sensitive.
+RozeLynx adds enhanced PWA support, modern download handoff support (well, sort of. Tested with uGet. Testers/PRs welcome!), per-tab network interface binding (no more redoing VPN split tunnel clients — you can set profile defaults for interfaces and switch per tab on the fly), and PAM passkeys: local WebAuthn passkeys whose user verification runs through PAM — howdy face recognition first where the system stack carries `pam_howdy.so`, the account password prompt as fallback. USB/NFC security keys keep working through the same prompt. PLEASE BE CAREFUL. We made great pains preventing leaks, using DNS over HTTPS (DoH), but it is advised to treat this as alpha-stage software. We recommend users to run leak checks with tcpdump or Wireshark, before doing anything sensitive.
 
 Linux only, for now. PRs welcome.
 
@@ -56,8 +56,8 @@ Layout:
   (top level: `*.patch`, `librewolf.cfg`, `local-settings.js`,
   `policies.json`, ...) plus `ui-patches/`, `root-patches/` (patches
   applied at the source-tree root) and the full `rozelynx/` tree:
-  branding artwork, the net-iface and PWA/SSB taskbar C++ components,
-  the RozeLynx Features extension source, the native messaging host,
+  branding artwork, the net-iface, PAM-passkey and PWA/SSB taskbar C++
+  components, the RozeLynx Features extension source, the native messaging host,
   the mozconfig configure fragment, system prefs, the Lepton and SSB
   skins, and toolchain fixes
 - `gentoo/firefox-template.ebuild` — the patched ebuild template the
@@ -153,7 +153,7 @@ in the overlay for the full list). The RozeLynx set:
 ```
 rozelynx chrome-web-store experiments external-browser i18n
 mouse-gestures qr-code pwa lepton-skin ip-protection net-iface
-download-handoff
+pam-passkeys download-handoff
 ```
 
 plus the LibreWolf-style privacy hardening set (`remove-safebrowsing`,
@@ -201,3 +201,75 @@ tarball asset and pushes the package to the AUR in one step (needs
 `gh auth login`). Note the prebuilt tarballs published so far enable
 the Wayland-only toolkit; build `rozelynx-git` for an x11+wayland
 binary.
+
+## PAM passkeys (howdy face authentication / password)
+
+With `pam-passkeys` (USE flag on Gentoo, `--use pam-passkeys` for the
+distro-agnostic build; enabled by default in both), RozeLynx ships a
+local WebAuthn **platform authenticator**: passkeys that live in the
+browser profile and are unlocked by the *system's* authentication
+stack instead of a device PIN:
+
+- **How it verifies you:** every passkey ceremony (creation and use)
+  runs a PAM transaction for your own account. When the resolved
+  service stack carries `pam_howdy.so` (Howdy face authentication —
+  as `/etc/pam.d/system-auth` does on the reference machine), the
+  browser shows a *"look at the camera"* doorhanger and the face
+  match is the user verification. When Howdy is missing, fails, or
+  is not configured, PAM falls through to the password module and
+  the browser shows the account password prompt. Either way the
+  WebAuthn user-verification flags are set only after PAM reports
+  success.
+
+- **Service resolution order:** `/etc/pam.d/rozelynx` first (the
+  ebuild installs an example; the tarball/AUR install one at
+  packaging time), then the distro chains `system-auth` /
+  `common-auth`. Point `/etc/pam.d/rozelynx` wherever you like —
+  fingerprint readers, OTP, `pam_u2f`, or plain `pam_unix`.
+
+- **What is stored:** one ES256 key pair per credential
+  (attestation format `none`, zero AAGUID). The private key is a
+  PKCS#8 blob under the preference branch
+  `security.webauthn.rozelynx_pam.cred.<id>.*` in the profile —
+  unencrypted at rest, exactly like the profile's own saved logins,
+  so the profile directory must be treated as a secret store.
+  Credential metadata (relying party ID, user name, display name,
+  sign counter) is stored alongside. Passkeys are discoverable
+  (conditional-mediation autofill works) unless the relying party
+  asked for `residentKey: discouraged`.
+
+- **Routing:** requests with an explicit
+  `authenticatorAttachment: "platform"` always go to the local
+  authenticator; `"cross-platform"` (USB/NFC) and legacy U2F
+  AppID requests go to the security-key bridge; when the relying
+  party leaves the attachment open, the prompt asks where to save
+  the passkey (this device vs USB security key). USB/NFC keys keep
+  working in every configuration.
+
+- **Switching it off:** `security.webauthn.rozelynx_pam.enabled`
+  (default `true`) disables the local authenticator at runtime —
+  it then answers `isUVPAA` with false and transparently forwards
+  everything to the security-key bridge.
+
+Notes and limits:
+
+- Howdy is *not* as secure as a password; a face model is a
+  biometric convenience trade-off, same as on any phone. Treat the
+  face path with the same care you would on the login screen —
+  anyone who can fool your PAM stack can use your passkeys, and the
+  password fallback follows the system's lockout policy
+  (`pam_faillock` et al.).
+- Attestation is always the `none` format: relying parties get no
+  device identifiers, and the direct-attestation consent prompt is
+  never triggered.
+- The PRF (`prf`) and large-blob extensions are not implemented;
+  requests relying on them fail from the local authenticator
+  (sites can still use security keys for those).
+- Cancelling a face capture mid-run is honored, but the camera
+  session belongs to the Howdy PAM module: it ends on Howdy's own
+  timeout, and a retry started in that window answers "not
+  verified" until the previous transaction drains.
+- Confined packages (flatpak/snap) may not see the host PAM stack
+  or camera — there the local authenticator degrades to the
+  password prompt or reports unavailable, and USB keys keep
+  working.

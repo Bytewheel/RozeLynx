@@ -1,0 +1,24 @@
+RozeLynx pam-passkeys: runtime switch for the PAM platform authenticator.
+
+security.webauthn.rozelynx_pam.enabled (default true) turns the local
+passkey authenticator off without a rebuild; with it off the service
+degrades to a transparent pass-through to the authrs_bridge and
+isUVPAA answers false again. The authenticator itself is only compiled in
+GTK builds with USE=pam-passkeys.
+
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -18984,6 +18984,13 @@
+   mirror: always
+   rust: true
+ 
++# RozeLynx: local platform authenticator backed by PAM (howdy face
++# authentication, account password fallback). GTK builds only.
++- name: security.webauthn.rozelynx_pam.enabled
++  type: RelaxedAtomicBool
++  value: true
++  mirror: always
++
+ # residentKey support when using Android platform API
+ - name: security.webauthn.webauthn_enable_android_fido2.residentkey
+   type: RelaxedAtomicBool

@@ -49,6 +49,7 @@ depends=(
   mesa
   'nspr>=4.39'
   'nss>=3.125'
+  pam
   pango
   pixman
   zlib
@@ -70,6 +71,7 @@ optdepends=(
   'libva: VAAPI hardware video decoding'
   'networkmanager: geolocation via nearby Wi-Fi networks (necko-wifi)'
   'vulkan-icd-loader: Vulkan rendering (hwaccel vulkantest)'
+  'howdy: face recognition for local passkeys (pam-passkeys; password prompt is the fallback)'
 )
 provides=("rozelynx=${pkgver%.r*}")
 conflicts=(rozelynx)

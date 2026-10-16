@@ -27,6 +27,7 @@
 #   prepare   - unpack firefox, apply Gentoo patchset, the full RozeLynx
 #               sequence (configure patch, branding sweep + branding dir +
 #               magick icon generation, PWA + net-iface C++ components,
+#               the PAM passkey platform authenticator, the
 #               extension-menus patch) and the LibreWolf privacy patch set,
 #               feature-gated with the same flag names as the ebuild USE
 #               flags
@@ -66,6 +67,12 @@
 #   * The Gentoo patchset is applied because the mozconfig mirrors the
 #     ebuild defaults (system libs everywhere); drop --no-use system-* if
 #     you want fewer system-library dependencies.
+#   * pam-passkeys links libpam into libxul (sys-libs/pam on Gentoo, pam on
+#     Arch, libpam0g-dev on Debian) and needs a PAM service to verify
+#     against: /etc/pam.d/rozelynx if present, else the system-auth /
+#     common-auth chains (face recognition via howdy, password fallback).
+#     Without a PAM stack the feature reports unavailable and WebAuthn
+#     falls back to USB security keys.
 #   * net-iface SO_BINDTODEVICE needs CAP_NET_RAW: granted via setcap in
 #     the staged tree when running as root (xattrs survive tar + snap
 #     pack). AppImage squashfs mounts are nosuid - grant cap_net_raw to
@@ -121,12 +128,12 @@ ALL_FLAGS=(
     ui-tweaks link-preview language-packs xdg-profile newtab-fixes
     rozelynx rozelynx-debug chrome-web-store experiments external-browser
     i18n mouse-gestures qr-code pwa lepton-skin ip-protection net-iface
-    download-handoff
+    download-handoff pam-passkeys
 )
 DEFAULT_USE_ON=(
     rozelynx chrome-web-store experiments external-browser i18n mouse-gestures
     qr-code pwa lepton-skin ip-protection net-iface download-handoff
-    remove-safebrowsing remove-pocket remove-password-manager remove-sponsored
+    pam-passkeys remove-safebrowsing remove-pocket remove-password-manager remove-sponsored
     librewolf-ui extension-firewall remove-pingsender remove-openai
     webgl-permission fingerprint-fixes autoconfig-enhanced remove-ads
     privacy-ui translation-fullpage extension-uninstall-url permission-tweaks
@@ -279,7 +286,8 @@ fi
 if ! use rozelynx; then
     _off=()
     for _f in chrome-web-store experiments external-browser i18n mouse-gestures \
-              qr-code pwa lepton-skin ip-protection net-iface download-handoff; do
+              qr-code pwa lepton-skin ip-protection net-iface download-handoff \
+              pam-passkeys; do
         use "${_f}" && { USE["${_f}"]=0; _off+=("${_f}"); }
     done
     unset _f
@@ -490,6 +498,14 @@ stage_prepare() {
         while IFS= read -r -d '' p; do
             apply_one_patch "${p}" -d "${BUILD_SRC}" -p1
         done < <(find "${pdir}" -name '*.patch' -print0 | sort -z)
+        # The patchset patches the vendored bindgen crate in place; cargo
+        # verifies vendored files against .cargo-checksum.json at build
+        # time and dies on the mismatch.  Same sed as the ebuild's
+        # moz_clear_vendor_checksums bindgen.
+        sed -i -e 's/\("files":{\)[^}]*/\1/' \
+            "${BUILD_SRC}"/third_party/rust/bindgen/.cargo-checksum.json \
+            || die "failed to clear bindgen cargo checksums"
+        log "  cleared cargo checksums for the patched bindgen crate"
     fi
 
     # version-sensitive LibreWolf patch selection (same as src_prepare)
@@ -770,10 +786,14 @@ PWAMOZ
            "${ni_src}/"*.conf "${ni_src}/moz.build" \
            netwerk/base/rozelynx-netiface/
         sed -i '/"url-classifier",/a\    "base/rozelynx-netiface",' netwerk/moz.build
-        if ver_ge "${FIREFOX_VERSION}" 157.0; then
-            # FF157: nsHttpConnectionInfo replaced SetHttp3Disabled(bool)
-            # with SetHttp3Policy(Http3Policy) — v12 h3 opt-out call sites
-            # use the policy enum in the 157 fork.
+        # Same version-conditional necko patch as the ebuild's src_prepare:
+        # the plain net-iface-necko.patch carries the pre-157 hunks, the
+        # -157/-158 follow-ups are the full self-contained rework rebased
+        # per Firefox major (upstream signature drift: FromUnspecEntry
+        # gained aFromStaleCache in 158).
+        if ver_ge "${FIREFOX_VERSION}" 158.0; then
+            apply_one_patch "${ni_src}/net-iface-necko-158.patch" -p1
+        elif ver_ge "${FIREFOX_VERSION}" 157.0; then
             apply_one_patch "${ni_src}/net-iface-necko-157.patch" -p1
         else
             apply_one_patch "${ni_src}/net-iface-necko.patch" -p1
@@ -785,6 +805,19 @@ PWAMOZ
         apply_one_patch "${ni_src}/net-iface-provider-host-native-fix.patch" -p1
         apply_one_patch "${ni_src}/net-iface-ext-dns.patch" -p1
         apply_one_patch "${ni_src}/net-iface-sessionrestore.patch" -p1
+    fi
+
+    # --- pam-passkeys: local WebAuthn platform authenticator (PAM: howdy
+    # face authentication first, account password fallback) ---
+    if use pam-passkeys && use rozelynx; then
+        log "RozeLynx: PAM passkey platform authenticator (howdy + password)"
+        local pp_src="${FILES}/rozelynx/cpp/webauthn-pam"
+        mkdir -p dom/webauthn/rozelynx-pam
+        cp "${pp_src}/"*.cpp "${pp_src}/"*.h "${pp_src}/moz.build" \
+           dom/webauthn/rozelynx-pam/
+        apply_one_patch "${pp_src}/webauthn-pam-service.patch" -p1
+        apply_one_patch "${pp_src}/webauthn-pam-prompt-helper.patch" -p1
+        apply_one_patch "${pp_src}/webauthn-pam-static-prefs.patch" -p1
     fi
 
     # --- LibreWolf-style privacy patches (vendored in this overlay) ---
@@ -814,7 +847,17 @@ PWAMOZ
     fi
     use extension-firewall && { apply_one_patch "${LW}/rs-blocker.patch" -p1; any_lw_patch=1; }
     use remove-pingsender && { apply_one_patch "${LW}/remove-pingsender.patch" -p1; any_lw_patch=1; }
-    use remove-openai && { apply_one_patch "${LW}/remove-openai.patch" -p1; any_lw_patch=1; }
+    if use remove-openai; then
+        # 158: toolkit/content/license.html is gone (generated from the
+        # LICENSES moz.build declarations now); remove-openai-158 swaps
+        # the license.html hunk for the ml/moz.build LICENSED_UNDER one.
+        if ver_ge "${FIREFOX_VERSION}" 158.0; then
+            apply_one_patch "${LW}/remove-openai-158.patch" -p1
+        else
+            apply_one_patch "${LW}/remove-openai.patch" -p1
+        fi
+        any_lw_patch=1
+    fi
     use webgl-permission && { apply_one_patch "${LW}/webgl-permission.patch" -p1; any_lw_patch=1; }
     if use fingerprint-fixes; then
         apply_one_patch "${LW}/fpp-canvas-fix.patch" -p1
@@ -877,7 +920,13 @@ PWAMOZ
             log "  skipping firefox-view.patch (upstreamed in 154)"
         fi
         apply_one_patch "${LW}/ui-patches/handlers.patch" -p1
-        apply_one_patch "${LW}/ui-patches/neterror.patch" -p1
+        # 158: net-error-card.mjs wrapped the img-container in an
+        # ILLUSTRATION_ENABLED conditional - neterror-158 is rebased for it.
+        if ver_ge "${FIREFOX_VERSION}" 158.0; then
+            apply_one_patch "${LW}/ui-patches/neterror-158.patch" -p1
+        else
+            apply_one_patch "${LW}/ui-patches/neterror.patch" -p1
+        fi
         apply_one_patch "${LW}/ui-patches/pref-naming.patch" -p1
         apply_one_patch "${LW}/ui-patches/home-preferences.patch" -p1
         apply_one_patch "${LW}/ui-patches/trustpanel.patch" -p1
@@ -916,7 +965,7 @@ PWAMOZ
     find third_party -type f \( -name '*.so' -o -name '*.o' \) -delete >/dev/null || true
 
     local _v
-    for _v in glslopt encoding_rs bindgen; do
+    for _v in glslopt encoding_rs; do
         local ck="third_party/rust/${_v}/.cargo-checksum.json"
         if [[ -f ${ck} ]]; then
             sed -i -e 's/\("files":{\)[^}]*/\1/' "${ck}"
@@ -1441,6 +1490,12 @@ EOF
         fi
     fi
 
+    # pam-passkeys: ship the PAM service example with the staged tree
+    if use pam-passkeys && use rozelynx; then
+        install -Dm0644 "${SRC_ROOT}/rozelynx/cpp/webauthn-pam/rozelynx.pam" \
+            "${STAGE}${PREFIX}/share/doc/rozelynx/pam.d/rozelynx"
+    fi
+
     # net-iface CAP_NET_RAW (xattrs survive tar --xattrs and snap pack)
     if use net-iface && [[ -x ${FIVE}/rozelynx ]]; then
         if [[ ${EUID} -eq 0 ]] && command -v setcap >/dev/null 2>&1; then
@@ -1541,6 +1596,9 @@ EOF
     if use net-iface; then
         warn "net-iface in an AppImage: squashfs mounts are nosuid - file capabilities do not apply; grant cap_net_raw to the extracted binary if you need interface pinning"
     fi
+    if use pam-passkeys; then
+        warn "pam-passkeys in an AppImage: /etc/pam.d of the host is reachable, but the bundled libpam stack may miss the howdy module - check with 'howdy test' on the host; USB security keys always work"
+    fi
     return 0
 }
 
@@ -1574,6 +1632,13 @@ pkg_flatpak() {
     local payload="${fbdir}/rozelynx-${FIREFOX_VERSION}-payload.tar.xz"
     (cd "${payload_root}" && tar -cJf "${payload}" .) || die "payload tar failed"
 
+    # howdy face authentication (pam-passkeys) needs the camera
+    local pam_extra_finish_args=""
+    if use pam-passkeys; then
+        pam_extra_finish_args=","$'\n'"    \"--device=all\""
+        warn "pam-passkeys in a flatpak: --device=all grants the camera for howdy; the PAM stack is still the runtime's - face auth may be unavailable and only the password prompt works"
+    fi
+
     cat >"${fbdir}/org.bytewheel.rozelynx.json" <<EOF
 {
   "app-id": "org.bytewheel.rozelynx",
@@ -1590,7 +1655,7 @@ pkg_flatpak() {
     "--device=dri",
     "--filesystem=xdg-download",
     "--talk-name=org.freedesktop.Notifications",
-    "--talk-name=org.freedesktop.portal.*"
+    "--talk-name=org.freedesktop.portal.*"${pam_extra_finish_args}
   ],
   "modules": [
     {
@@ -1701,6 +1766,9 @@ EOF
     [[ -n ${out} ]] && log "  done: ${out}"
     if use net-iface; then
         warn "net-iface in a strict snap: file capabilities are dropped by the confinement stack; run the binary unconfined or grant CAP_NET_RAW via a snap layout/daemon"
+    fi
+    if use pam-passkeys; then
+        warn "pam-passkeys in a strict snap: PAM service files and the howdy module live outside the sandbox - local passkeys will likely fail verification and fall back to USB security keys"
     fi
 }
 

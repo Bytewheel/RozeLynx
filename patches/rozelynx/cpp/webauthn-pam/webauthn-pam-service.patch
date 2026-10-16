@@ -1,0 +1,57 @@
+RozeLynx pam-passkeys: register the PAM platform authenticator.
+
+Wires dom/webauthn up to the new RozeLynxPamWebAuthnService (files/rozelynx/
+cpp/webauthn-pam/), a local passkey authenticator whose user verification
+runs through PAM - howdy face recognition when the system PAM stack has it,
+the account password otherwise. On GTK builds it becomes the "platform"
+WebAuthn service; the authrs_bridge (USB/NFC security keys) stays available
+and receives everything the local authenticator cannot serve (cross-platform
+requests, foreign algorithms, disabled feature). The autofill provider
+constant lets the login dropdown label RozeLynx-stored passkeys.
+
+--- a/dom/webauthn/moz.build
++++ b/dom/webauthn/moz.build
+@@ -5,6 +5,11 @@
+ with Files("**"):
+     BUG_COMPONENT = ("Core", "DOM: Web Authentication")
+ 
++if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
++    DIRS += [
++        "rozelynx-pam",
++    ]
++
+ EXTRA_JS_MODULES += [
+     "WebAuthnRelatedOriginFetcher.sys.mjs",
+ ]
+--- a/dom/webauthn/WebAuthnService.h
++++ b/dom/webauthn/WebAuthnService.h
+@@ -23,6 +23,10 @@
+ #  include "WinWebAuthnService.h"
+ #endif
+ 
++#ifdef MOZ_WIDGET_GTK
++#  include "mozilla/dom/RozeLynxPamWebAuthnService.h"
++#endif
++
+ namespace mozilla::dom {
+ 
+ already_AddRefed<nsIWebAuthnService> NewWebAuthnService();
+@@ -49,6 +53,8 @@
+     if (!mPlatformService) {
+       mPlatformService = mAuthrsService;
+     }
++#elif defined(MOZ_WIDGET_GTK)
++    mPlatformService = new RozeLynxPamWebAuthnService(mAuthrsService);
+ #else
+     mPlatformService = mAuthrsService;
+ #endif
+--- a/dom/webauthn/nsIWebAuthnService.idl
++++ b/dom/webauthn/nsIWebAuthnService.idl
+@@ -25,6 +25,7 @@
+     const octet PROVIDER_PLATFORM_WINDOWS = 2;
+     const octet PROVIDER_PLATFORM_MACOS = 3;
+     const octet PROVIDER_PLATFORM_ANDROID = 4;
++    const octet PROVIDER_PLATFORM_ROZELYNX_PAM = 5;
+ 
+     readonly attribute octet provider;
+     readonly attribute AString userName;

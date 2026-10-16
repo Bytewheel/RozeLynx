@@ -1,0 +1,2415 @@
+diff --git a/netwerk/base/nsISocketTransport.idl b/netwerk/base/nsISocketTransport.idl
+index 1eb4a18e29..22372549d1 100644
+--- a/netwerk/base/nsISocketTransport.idl
++++ b/netwerk/base/nsISocketTransport.idl
+@@ -108,6 +108,15 @@ interface nsISocketTransport : nsITransport
+      */
+     attribute nsIInterfaceRequestor securityCallbacks;
+ 
++    /**
++     * RozeLynx netiface: network interface to bind this socket to via
++     * SO_BINDTODEVICE (Linux only). Empty string means normal routing.
++     *
++     * NOTE: must be set before the connection is initiated; setting it
++     * after the socket is connected has no effect.
++     */
++    attribute ACString bindIface;
++
+     /**
+      * Test if this socket transport is (still) connected.
+      */
+diff --git a/netwerk/base/nsIUDPSocket.idl b/netwerk/base/nsIUDPSocket.idl
+index 72270777e8..af0a414b72 100644
+--- a/netwerk/base/nsIUDPSocket.idl
++++ b/netwerk/base/nsIUDPSocket.idl
+@@ -129,6 +129,14 @@ interface nsIUDPSocket : nsISupports
+      */
+     [noscript] void connect([const] in NetAddrPtr aAddr);
+ 
++    /**
++     * RozeLynx netiface: bind this UDP socket to a network interface via
++     * SO_BINDTODEVICE (Linux only). Empty string means normal routing.
++     *
++     * NOTE: must be set before init(); it has no effect afterwards.
++     */
++    attribute ACString bindIface;
++
+     /**
+      * Returns the local address of this UDP socket
+      */
+diff --git a/netwerk/base/nsSocketTransport2.cpp b/netwerk/base/nsSocketTransport2.cpp
+index d617846df3..5e97dd3f5e 100644
+--- a/netwerk/base/nsSocketTransport2.cpp
++++ b/netwerk/base/nsSocketTransport2.cpp
+@@ -5,6 +5,11 @@
+ #include "nsSocketTransport2.h"
+ 
+ #include <algorithm>
++#if defined(XP_LINUX)
++#  include <errno.h>
++#  include <string.h>
++#  include <sys/socket.h>
++#endif
+ 
+ #include "MockNetworkLayer.h"
+ #include "MockNetworkLayerController.h"
+@@ -24,6 +29,7 @@
+ #include "nsIClassInfoImpl.h"
+ #include "nsIDNSByTypeRecord.h"
+ #include "nsIDNSRecord.h"
++#include "DNSAdditionalInfo.h"  // RozeLynx netiface
+ #include "nsIDNSService.h"
+ #include "nsIOService.h"
+ #include "nsIPipe.h"
+@@ -1075,10 +1081,30 @@
+     SOCKET_LOG(("nsSocketTransport %p origin %s doing dns for %s\n", this,
+                 mOriginHost.get(), SocketHost().get()));
+   }
++  // RozeLynx netiface: the second of the two resolve sites that passed nullptr
++  // and so dropped the interface assignment. InitiateSocket binds the socket
++  // itself, but the name was resolved before that, unbound, on the default
++  // route - which for a DoH channel is the TRR endpoint bootstrap. Signature
++  // when it leaks: `bindIf=- info=0` with flags 0x3800, this site's own
++  // combination (no WANT_RECORD_ON_ERROR, unlike the DnsAndConnectSocket seam).
++  nsCOMPtr<nsIDNSAdditionalInfo> rozelynxInfo;
++  {
++    nsAutoCString bindIface;
++    {
++      MutexAutoLock lock(mLock);
++      bindIface = mBindIface;
++    }
++    if (!bindIface.IsEmpty()) {
++      // ""/-1 reads downstream exactly as a null additional-info does, so this
++      // adds the interface without changing which resolver is chosen.
++      rozelynxInfo = new DNSAdditionalInfo(""_ns, -1, bindIface);
++    }
++  }
+   rv =
+       dns->AsyncResolveNative(SocketHost(), nsIDNSService::RESOLVE_TYPE_DEFAULT,
+-                              dnsFlags, nullptr, this, mSocketTransportService,
+-                              mOriginAttributes, getter_AddRefs(mDNSRequest));
++                              dnsFlags, rozelynxInfo, this,
++                              mSocketTransportService, mOriginAttributes,
++                              getter_AddRefs(mDNSRequest));
+ 
+   if (NS_SUCCEEDED(rv)) {
+     SOCKET_LOG(("  advancing to STATE_RESOLVING\n"));
+@@ -1397,6 +1423,47 @@
+     return rv;
+   }
+ 
++#if defined(XP_LINUX)
++  // RozeLynx netiface: bind the socket to the assigned interface before
++  // connect().  SO_BINDTODEVICE requires CAP_NET_RAW; on EPERM we fail the
++  // connection instead of silently egressing via the wrong interface.
++  // Loopback/LAN destinations are never bound: they route via lo or the
++  // LAN interface and would be unreachable through the assigned device.
++  {
++    nsAutoCString bindIface;
++    {
++      MutexAutoLock lock(mLock);
++      bindIface = mBindIface;
++    }
++    if (!bindIface.IsEmpty() && !mNetAddr.IsLoopbackAddr() &&
++        !mNetAddr.IsIPAddrLocal()) {
++      int nativeFd = PR_FileDesc2NativeHandle(fd);
++      if (setsockopt(nativeFd, SOL_SOCKET, SO_BINDTODEVICE, bindIface.get(),
++                     bindIface.Length() + 1) != 0) {
++        int err = errno;
++        if (err == EPERM) {
++          SOCKET_LOG(
++              ("  RozeLynx netiface: SO_BINDTODEVICE(%s) EPERM - the binary "
++               "lacks CAP_NET_RAW. Reinstall rozelynx with USE=net-iface.\n",
++               bindIface.get()));
++        } else {
++          SOCKET_LOG(
++              ("  RozeLynx netiface: SO_BINDTODEVICE(%s) failed errno=%d\n",
++               bindIface.get(), err));
++        }
++        PR_Close(fd);
++        return NS_ERROR_CONNECTION_REFUSED;
++      }
++      SOCKET_LOG(("  RozeLynx netiface: socket bound to %s\n",
++                  bindIface.get()));
++    } else if (!bindIface.IsEmpty()) {
++      SOCKET_LOG(
++          ("  RozeLynx netiface: local destination - not binding to %s\n",
++           bindIface.get()));
++    }
++  }
++#endif
++
+ #ifdef FUZZING
+   if (StaticPrefs::fuzzing_necko_enabled()) {
+     rv = AttachFuzzyIOLayer(fd);
+@@ -2768,6 +2835,22 @@
+   return NS_OK;
+ }
+ 
++// RozeLynx netiface
++NS_IMETHODIMP
++nsSocketTransport::GetBindIface(nsACString& aBindIface) {
++  MutexAutoLock lock(mLock);
++  aBindIface = mBindIface;
++  return NS_OK;
++}
++
++// RozeLynx netiface
++NS_IMETHODIMP
++nsSocketTransport::SetBindIface(const nsACString& aBindIface) {
++  MutexAutoLock lock(mLock);
++  mBindIface = aBindIface;
++  return NS_OK;
++}
++
+ NS_IMETHODIMP
+ nsSocketTransport::SetLinger(bool aPolarity, int16_t aTimeout) {
+   MutexAutoLock lock(mLock);
+diff --git a/netwerk/base/nsSocketTransport2.h b/netwerk/base/nsSocketTransport2.h
+index 1afb00aad7..d2f2893e7c 100644
+--- a/netwerk/base/nsSocketTransport2.h
++++ b/netwerk/base/nsSocketTransport2.h
+@@ -229,6 +229,9 @@ class nsSocketTransport final : public nsASocketHandler,
+   bool mResetFamilyPreference{false};
+   uint32_t mTlsFlags{0};
+   bool mReuseAddrPort{false};
++  // RozeLynx netiface: interface for SO_BINDTODEVICE ("" = normal routing).
++  // Set before the connection is initiated; read on the socket thread.
++  nsCString mBindIface;
+ 
+   uint16_t SocketPort() {
+     return (!mProxyHost.IsEmpty() && !mProxyTransparent) ? mProxyPort : mPort;
+diff --git a/netwerk/base/nsUDPSocket.cpp b/netwerk/base/nsUDPSocket.cpp
+index f052d8afa2..a29d486f37 100644
+--- a/netwerk/base/nsUDPSocket.cpp
++++ b/netwerk/base/nsUDPSocket.cpp
+@@ -4,6 +4,11 @@
+ 
+ #include "nsUDPSocket.h"
+ 
++#if defined(XP_LINUX)
++#  include <errno.h>
++#  include <sys/socket.h>
++#endif
++
+ #include "HttpConnectionUDP.h"
+ #include "MockNetworkLayer.h"
+ #include "mozilla/Components.h"
+@@ -618,6 +623,49 @@ nsUDPSocket::InitWithAddress(const NetAddr* aAddr, nsIPrincipal* aPrincipal,
+     return NS_ERROR_FAILURE;
+   }
+ 
++#if defined(XP_LINUX)
++  // RozeLynx netiface: bind the socket to the assigned interface before
++  // it is used. SO_BINDTODEVICE requires CAP_NET_RAW; on EPERM we fail
++  // the socket instead of silently egressing via the wrong interface.
++  // Sockets bound to a loopback or otherwise local address are never
++  // device-bound: they serve local traffic and would be unreachable
++  // through the assigned device.
++  {
++    nsAutoCString bindIface;
++    {
++      MutexAutoLock lock(mLock);
++      bindIface = mBindIface;
++    }
++    if (!bindIface.IsEmpty() && !aAddr->IsLoopbackAddr() &&
++        !aAddr->IsIPAddrLocal()) {
++      int nativeFd = PR_FileDesc2NativeHandle(mFD);
++      if (setsockopt(nativeFd, SOL_SOCKET, SO_BINDTODEVICE, bindIface.get(),
++                     bindIface.Length() + 1) != 0) {
++        int err = errno;
++        if (err == EPERM) {
++          UDPSOCKET_LOG(
++              ("  RozeLynx netiface: SO_BINDTODEVICE(%s) EPERM - the binary "
++               "lacks CAP_NET_RAW. Reinstall rozelynx with USE=net-iface.\n",
++               bindIface.get()));
++        } else {
++          UDPSOCKET_LOG(
++              ("  RozeLynx netiface: SO_BINDTODEVICE(%s) failed errno=%d\n",
++               bindIface.get(), err));
++        }
++        PR_Close(mFD);
++        mFD = nullptr;
++        return NS_ERROR_CONNECTION_REFUSED;
++      }
++      UDPSOCKET_LOG(("  RozeLynx netiface: UDP socket bound to %s\n",
++                     bindIface.get()));
++    } else if (!bindIface.IsEmpty()) {
++      UDPSOCKET_LOG(
++          ("  RozeLynx netiface: local address - not binding to %s\n",
++           bindIface.get()));
++    }
++  }
++#endif
++
+ #ifdef FUZZING
+   if (StaticPrefs::fuzzing_necko_enabled()) {
+     rv = AttachFuzzyIOLayer(mFD);
+@@ -1492,6 +1540,22 @@ nsUDPSocket::SetMulticastLoopback(bool aLoopback) {
+   return NS_OK;
+ }
+ 
++// RozeLynx netiface
++NS_IMETHODIMP
++nsUDPSocket::GetBindIface(nsACString& aBindIface) {
++  MutexAutoLock lock(mLock);
++  aBindIface = mBindIface;
++  return NS_OK;
++}
++
++// RozeLynx netiface
++NS_IMETHODIMP
++nsUDPSocket::SetBindIface(const nsACString& aBindIface) {
++  MutexAutoLock lock(mLock);
++  mBindIface = aBindIface;
++  return NS_OK;
++}
++
+ NS_IMETHODIMP
+ nsUDPSocket::GetRecvBufferSize(int* size) {
+   // Bug 1252759 - missing support for GetSocketOption
+diff --git a/netwerk/base/nsUDPSocket.h b/netwerk/base/nsUDPSocket.h
+index 33deecc4b4..26c518c86c 100644
+--- a/netwerk/base/nsUDPSocket.h
++++ b/netwerk/base/nsUDPSocket.h
+@@ -82,6 +82,10 @@ class nsUDPSocket final : public nsASocketHandler, public nsIUDPSocket {
+   uint64_t mByteReadCount{0};
+   uint64_t mByteWriteCount{0};
+   bool mIsTRRServiceChannel{false};
++  // RozeLynx netiface: interface for SO_BINDTODEVICE ("" = normal
++  // routing). Must be set before Init; read at fd-creation time on
++  // the socket thread.
++  nsCString mBindIface MOZ_GUARDED_BY(mLock);
+ };
+ 
+ inline bool nsUDPSocket::IsSocketClosed() {
+diff --git a/netwerk/dns/ChildDNSService.cpp b/netwerk/dns/ChildDNSService.cpp
+index ccf972d794..a674a23141 100644
+--- a/netwerk/dns/ChildDNSService.cpp
++++ b/netwerk/dns/ChildDNSService.cpp
+@@ -71,7 +71,7 @@ void ChildDNSService::GetDNSRecordHashKey(
+     const nsACString& aHost, const nsACString& aTrrServer, int32_t aPort,
+     uint16_t aType, const OriginAttributes& aOriginAttributes,
+     nsIDNSService::DNSFlags aFlags, uintptr_t aListenerAddr,
+-    nsACString& aHashKey) {
++    const nsACString& aBindIface, nsACString& aHashKey) {
+   aHashKey.Assign(aHost);
+   aHashKey.Assign(aTrrServer);
+   aHashKey.AppendInt(aPort);
+@@ -83,6 +83,10 @@ void ChildDNSService::GetDNSRecordHashKey(
+ 
+   aHashKey.AppendInt(aFlags);
+   aHashKey.AppendPrintf("0x%" PRIxPTR, aListenerAddr);
++
++  // RozeLynx netiface: pending requests are keyed per interface so
++  // cancellation targets the right assignment.
++  aHashKey.Append(aBindIface);
+ }
+ 
+ nsresult ChildDNSService::AsyncResolveInternal(
+@@ -131,9 +135,12 @@ nsresult ChildDNSService::AsyncResolveInternal(
+     listener = new DNSListenerProxy(listener, target);
+   }
+ 
++  // RozeLynx netiface: thread the interface assignment into the sender so
++  // it travels over PDNSRequest IPC and partitions the DNS cache.
+   RefPtr<DNSRequestSender> sender = new DNSRequestSender(
+       hostname, DNSAdditionalInfo::URL(aInfo), DNSAdditionalInfo::Port(aInfo),
+-      type, aOriginAttributes, flags, listener, target);
++      type, aOriginAttributes, flags, listener, target,
++      DNSAdditionalInfo::BindIface(aInfo));
+   RefPtr<DNSRequestActor> dnsReq;
+   if (resolveDNSInSocketProcess) {
+     dnsReq = new DNSRequestParent(sender);
+@@ -149,7 +156,8 @@ nsresult ChildDNSService::AsyncResolveInternal(
+     nsCString key;
+     GetDNSRecordHashKey(hostname, DNSAdditionalInfo::URL(aInfo),
+                         DNSAdditionalInfo::Port(aInfo), type, aOriginAttributes,
+-                        flags, originalListenerAddr, key);
++                        flags, originalListenerAddr,
++                        DNSAdditionalInfo::BindIface(aInfo), key);
+     mPendingRequests.GetOrInsertNew(key)->AppendElement(sender);
+   }
+ 
+@@ -173,7 +181,8 @@ nsresult ChildDNSService::CancelAsyncResolveInternal(
+   uintptr_t listenerAddr = reinterpret_cast<uintptr_t>(aListener);
+   GetDNSRecordHashKey(aHostname, DNSAdditionalInfo::URL(aInfo),
+                       DNSAdditionalInfo::Port(aInfo), aType, aOriginAttributes,
+-                      aFlags, listenerAddr, key);
++                      aFlags, listenerAddr, DNSAdditionalInfo::BindIface(aInfo),
++                      key);
+   if (mPendingRequests.Get(key, &hashEntry)) {
+     // We cancel just one.
+     hashEntry->ElementAt(0)->Cancel(aReason);
+@@ -405,7 +414,7 @@ void ChildDNSService::NotifyRequestDone(DNSRequestSender* aDnsRequest) {
+   GetDNSRecordHashKey(aDnsRequest->mHost, aDnsRequest->mTrrServer,
+                       aDnsRequest->mPort, aDnsRequest->mType,
+                       aDnsRequest->mOriginAttributes, originalFlags,
+-                      originalListenerAddr, key);
++                      originalListenerAddr, aDnsRequest->mBindIface, key);
+ 
+   nsTArray<RefPtr<DNSRequestSender>>* hashEntry;
+ 
+diff --git a/netwerk/dns/ChildDNSService.h b/netwerk/dns/ChildDNSService.h
+index c5a432d22d..4510f04ca7 100644
+--- a/netwerk/dns/ChildDNSService.h
++++ b/netwerk/dns/ChildDNSService.h
+@@ -44,7 +44,7 @@ class ChildDNSService final : public DNSServiceBase, public nsPIDNSService {
+       const nsACString& aHost, const nsACString& aTrrServer, int32_t aPort,
+       uint16_t aType, const OriginAttributes& aOriginAttributes,
+       nsIDNSService::DNSFlags aFlags, uintptr_t aListenerAddr,
+-      nsACString& aHashKey);
++      const nsACString& aBindIface, nsACString& aHashKey);
+   nsresult AsyncResolveInternal(const nsACString& hostname, uint16_t type,
+                                 nsIDNSService::DNSFlags flags,
+                                 nsIDNSAdditionalInfo* aInfo,
+diff --git a/netwerk/dns/DNSAdditionalInfo.cpp b/netwerk/dns/DNSAdditionalInfo.cpp
+index 885e9e10dc..6fdc7428a4 100644
+--- a/netwerk/dns/DNSAdditionalInfo.cpp
++++ b/netwerk/dns/DNSAdditionalInfo.cpp
+@@ -21,5 +21,12 @@ DNSAdditionalInfo::GetResolverURL(nsACString& aURL) {
+   return NS_OK;
+ }
+ 
++// RozeLynx netiface
++NS_IMETHODIMP
++DNSAdditionalInfo::GetBindIface(nsACString& aBindIface) {
++  aBindIface = mBindIface;
++  return NS_OK;
++}
++
+ }  // namespace net
+ }  // namespace mozilla
+diff --git a/netwerk/dns/DNSAdditionalInfo.h b/netwerk/dns/DNSAdditionalInfo.h
+index 7dcf459886..c57e91c556 100644
+--- a/netwerk/dns/DNSAdditionalInfo.h
++++ b/netwerk/dns/DNSAdditionalInfo.h
+@@ -15,8 +15,9 @@ class DNSAdditionalInfo : public nsIDNSAdditionalInfo {
+   NS_DECL_THREADSAFE_ISUPPORTS
+   NS_DECL_NSIDNSADDITIONALINFO
+  public:
+-  explicit DNSAdditionalInfo(const nsACString& aURL, int32_t aPort)
+-      : mURL(aURL), mPort(aPort) {};
++  explicit DNSAdditionalInfo(const nsACString& aURL, int32_t aPort,
++                             const nsACString& aBindIface = ""_ns)
++      : mURL(aURL), mPort(aPort), mBindIface(aBindIface){};
+   static nsCString URL(nsIDNSAdditionalInfo* aInfo) {
+     nsCString url;
+     if (aInfo) {
+@@ -31,11 +32,20 @@ class DNSAdditionalInfo : public nsIDNSAdditionalInfo {
+     }
+     return port;
+   }
++  // RozeLynx netiface
++  static nsCString BindIface(nsIDNSAdditionalInfo* aInfo) {
++    nsCString iface;
++    if (aInfo) {
++      MOZ_ALWAYS_SUCCEEDS(aInfo->GetBindIface(iface));
++    }
++    return iface;
++  }
+ 
+  private:
+   virtual ~DNSAdditionalInfo() = default;
+   nsCString mURL;
+   int32_t mPort;
++  nsCString mBindIface;
+ };
+ 
+ }  // namespace net
+diff --git a/netwerk/dns/DNSRequestBase.h b/netwerk/dns/DNSRequestBase.h
+index 8a419f57c3..9b4cc039d4 100644
+--- a/netwerk/dns/DNSRequestBase.h
++++ b/netwerk/dns/DNSRequestBase.h
+@@ -34,7 +34,8 @@ class DNSRequestBase : public nsISupports {
+                                       const int32_t& port, const uint16_t& type,
+                                       const OriginAttributes& originAttributes,
+                                       const nsIDNSService::DNSFlags& flags,
+-                                      const nsresult& reason) = 0;
++                                      const nsresult& reason,
++                                      const nsCString& bindIface) = 0;
+   virtual bool OnRecvLookupCompleted(const DNSRequestResponse& reply) = 0;
+   virtual void OnIPCActorDestroy() = 0;
+ 
+@@ -59,14 +60,16 @@ class DNSRequestSender final : public DNSRequestBase, public nsICancelable {
+                    int32_t aPort, const uint16_t& aType,
+                    const OriginAttributes& aOriginAttributes,
+                    const nsIDNSService::DNSFlags& aFlags,
+-                   nsIDNSListener* aListener, nsIEventTarget* target);
++                   nsIDNSListener* aListener, nsIEventTarget* target,
++                   const nsACString& aBindIface = ""_ns);
+ 
+   void OnRecvCancelDNSRequest(const nsCString& hostName,
+-                              const nsCString& trrServer, const int32_t& port,
+-                              const uint16_t& type,
+-                              const OriginAttributes& originAttributes,
+-                              const nsIDNSService::DNSFlags& flags,
+-                              const nsresult& reason) override;
++                               const nsCString& trrServer, const int32_t& port,
++                               const uint16_t& type,
++                               const OriginAttributes& originAttributes,
++                               const nsIDNSService::DNSFlags& flags,
++                               const nsresult& reason,
++                               const nsCString& bindIface) override;
+   bool OnRecvLookupCompleted(const DNSRequestResponse& reply) override;
+   void OnIPCActorDestroy() override;
+ 
+@@ -91,6 +94,8 @@ class DNSRequestSender final : public DNSRequestBase, public nsICancelable {
+   uint16_t mType = 0;
+   const OriginAttributes mOriginAttributes;
+   nsIDNSService::DNSFlags mFlags = nsIDNSService::RESOLVE_DEFAULT_FLAGS;
++  // RozeLynx netiface: interface assignment threaded through PDNSRequest.
++  nsCString mBindIface;
+ };
+ 
+ // DNSRequestHandler handles the dns request and sends the result back via IPC.
+@@ -105,14 +110,16 @@ class DNSRequestHandler final : public DNSRequestBase, public nsIDNSListener {
+   void DoAsyncResolve(const nsACString& hostname, const nsACString& trrServer,
+                       int32_t port, uint16_t type,
+                       const OriginAttributes& originAttributes,
+-                      nsIDNSService::DNSFlags flags);
++                      nsIDNSService::DNSFlags flags,
++                      const nsACString& aBindIface = ""_ns);
+ 
+   void OnRecvCancelDNSRequest(const nsCString& hostName,
+-                              const nsCString& trrServer, const int32_t& port,
+-                              const uint16_t& type,
+-                              const OriginAttributes& originAttributes,
+-                              const nsIDNSService::DNSFlags& flags,
+-                              const nsresult& reason) override;
++                               const nsCString& trrServer, const int32_t& port,
++                               const uint16_t& type,
++                               const OriginAttributes& originAttributes,
++                               const nsIDNSService::DNSFlags& flags,
++                               const nsresult& reason,
++                               const nsCString& bindIface) override;
+   bool OnRecvLookupCompleted(const DNSRequestResponse& reply) override;
+   void OnIPCActorDestroy() override;
+ 
+diff --git a/netwerk/dns/DNSRequestChild.cpp b/netwerk/dns/DNSRequestChild.cpp
+index b771d7f40b..3058ca5d5c 100644
+--- a/netwerk/dns/DNSRequestChild.cpp
++++ b/netwerk/dns/DNSRequestChild.cpp
+@@ -409,7 +409,8 @@ DNSRequestSender::DNSRequestSender(const nsACString& aHost,
+                                    const OriginAttributes& aOriginAttributes,
+                                    const nsIDNSService::DNSFlags& aFlags,
+                                    nsIDNSListener* aListener,
+-                                   nsIEventTarget* target)
++                                   nsIEventTarget* target,
++                                   const nsACString& aBindIface)
+     : mListener(aListener),
+       mTarget(target),
+       mResultStatus(NS_OK),
+@@ -418,12 +419,14 @@ DNSRequestSender::DNSRequestSender(const nsACString& aHost,
+       mPort(aPort),
+       mType(aType),
+       mOriginAttributes(aOriginAttributes),
+-      mFlags(aFlags) {}
++      mFlags(aFlags),
++      mBindIface(aBindIface) {}
+ 
+ void DNSRequestSender::OnRecvCancelDNSRequest(
+     const nsCString& hostName, const nsCString& trrServer, const int32_t& port,
+     const uint16_t& type, const OriginAttributes& originAttributes,
+-    const nsIDNSService::DNSFlags& flags, const nsresult& reason) {}
++    const nsIDNSService::DNSFlags& flags, const nsresult& reason,
++    const nsCString& bindIface) {}
+ 
+ NS_IMETHODIMP
+ DNSRequestSender::Cancel(nsresult reason) {
+@@ -442,10 +445,12 @@ DNSRequestSender::Cancel(nsresult reason) {
+ 
+   if (DNSRequestChild* child = mIPCActor->AsDNSRequestChild()) {
+     (void)child->SendCancelDNSRequest(mHost, mTrrServer, mPort, mType,
+-                                      mOriginAttributes, mFlags, reason);
++                                      mOriginAttributes, mFlags, reason,
++                                      mBindIface);
+   } else if (DNSRequestParent* parent = mIPCActor->AsDNSRequestParent()) {
+     (void)parent->SendCancelDNSRequest(mHost, mTrrServer, mPort, mType,
+-                                       mOriginAttributes, mFlags, reason);
++                                       mOriginAttributes, mFlags, reason,
++                                       mBindIface);
+   }
+ 
+   return NS_OK;
+@@ -469,8 +474,9 @@ void DNSRequestSender::StartRequest() {
+       }
+ 
+       // Send request to Parent process.
+-      gNeckoChild->SendPDNSRequestConstructor(child, mHost, mTrrServer, mPort,
+-                                              mType, mOriginAttributes, mFlags);
++      gNeckoChild->SendPDNSRequestConstructor(
++          child, mHost, mTrrServer, mPort, mType, mOriginAttributes, mFlags,
++          mBindIface);
+     } else if (XRE_IsSocketProcess()) {
+       // DNS resolution is done in the parent process. Send a DNS request to
+       // parent process.
+@@ -483,7 +489,8 @@ void DNSRequestSender::StartRequest() {
+       }
+ 
+       MOZ_ALWAYS_TRUE(socketProcessChild->SendPDNSRequestConstructor(
+-          child, mHost, mTrrServer, mPort, mType, mOriginAttributes, mFlags));
++          child, mHost, mTrrServer, mPort, mType, mOriginAttributes, mFlags,
++          mBindIface));
+     } else {
+       MOZ_ASSERT(false, "Wrong process");
+       return;
+@@ -500,7 +507,7 @@ void DNSRequestSender::StartRequest() {
+           SocketProcessParent::GetSingleton();
+       (void)socketParent->SendPDNSRequestConstructor(
+           requestParent, self->mHost, self->mTrrServer, self->mPort,
+-          self->mType, self->mOriginAttributes, self->mFlags);
++          self->mType, self->mOriginAttributes, self->mFlags, self->mBindIface);
+     };
+     if (!gIOService->SocketProcessReady()) {
+       gIOService->CallOrWaitForSocketProcess(std::move(task));
+@@ -588,9 +595,11 @@ DNSRequestChild::DNSRequestChild(DNSRequestBase* aRequest)
+ mozilla::ipc::IPCResult DNSRequestChild::RecvCancelDNSRequest(
+     const nsCString& hostName, const nsCString& trrServer, const int32_t& port,
+     const uint16_t& type, const OriginAttributes& originAttributes,
+-    const nsIDNSService::DNSFlags& flags, const nsresult& reason) {
++    const nsIDNSService::DNSFlags& flags, const nsresult& reason,
++    const nsCString& bindIface) {
+   mDNSRequest->OnRecvCancelDNSRequest(hostName, trrServer, port, type,
+-                                      originAttributes, flags, reason);
++                                      originAttributes, flags, reason,
++                                      bindIface);
+   return IPC_OK();
+ }
+ 
+diff --git a/netwerk/dns/DNSRequestChild.h b/netwerk/dns/DNSRequestChild.h
+index f99333ad2a..c2b846bc8f 100644
+--- a/netwerk/dns/DNSRequestChild.h
++++ b/netwerk/dns/DNSRequestChild.h
+@@ -29,7 +29,8 @@ class DNSRequestChild final : public DNSRequestActor, public PDNSRequestChild {
+       const nsCString& hostName, const nsCString& trrServer,
+       const int32_t& port, const uint16_t& type,
+       const OriginAttributes& originAttributes,
+-      const nsIDNSService::DNSFlags& flags, const nsresult& reason);
++      const nsIDNSService::DNSFlags& flags, const nsresult& reason,
++      const nsCString& bindIface);
+   mozilla::ipc::IPCResult RecvLookupCompleted(const DNSRequestResponse& reply);
+   virtual void ActorDestroy(ActorDestroyReason why) override;
+ };
+diff --git a/netwerk/dns/DNSRequestParent.cpp b/netwerk/dns/DNSRequestParent.cpp
+index 1678e0ebad..a53da4abfe 100644
+--- a/netwerk/dns/DNSRequestParent.cpp
++++ b/netwerk/dns/DNSRequestParent.cpp
+@@ -39,7 +39,8 @@ void DNSRequestHandler::DoAsyncResolve(const nsACString& hostname,
+                                        const nsACString& trrServer,
+                                        int32_t port, uint16_t type,
+                                        const OriginAttributes& originAttributes,
+-                                       nsIDNSService::DNSFlags flags) {
++                                       nsIDNSService::DNSFlags flags,
++                                       const nsACString& aBindIface) {
+   nsresult rv;
+   mFlags = flags;
+   nsCOMPtr<nsIDNSService> dns;
+@@ -48,8 +49,10 @@ void DNSRequestHandler::DoAsyncResolve(const nsACString& hostname,
+     nsCOMPtr<nsIEventTarget> main = GetMainThreadSerialEventTarget();
+     nsCOMPtr<nsICancelable> unused;
+     RefPtr<DNSAdditionalInfo> info;
+-    if (!trrServer.IsEmpty() || port != -1) {
+-      info = new DNSAdditionalInfo(trrServer, port);
++    // RozeLynx netiface: bindIface partitions the DNS cache per interface
++    // and forces TRR for assigned lookups.
++    if (!trrServer.IsEmpty() || port != -1 || !aBindIface.IsEmpty()) {
++      info = new DNSAdditionalInfo(trrServer, port, aBindIface);
+     }
+     rv = dns->AsyncResolveNative(
+         hostname, static_cast<nsIDNSService::ResolveType>(type), flags, info,
+@@ -64,14 +67,17 @@ void DNSRequestHandler::DoAsyncResolve(const nsACString& hostname,
+ void DNSRequestHandler::OnRecvCancelDNSRequest(
+     const nsCString& hostName, const nsCString& aTrrServer, const int32_t& port,
+     const uint16_t& type, const OriginAttributes& originAttributes,
+-    const nsIDNSService::DNSFlags& flags, const nsresult& reason) {
++    const nsIDNSService::DNSFlags& flags, const nsresult& reason,
++    const nsCString& bindIface) {
+   nsresult rv;
+   nsCOMPtr<nsIDNSService> dns;
+   dns = mozilla::components::DNS::Service(&rv);
+   if (NS_SUCCEEDED(rv)) {
+     RefPtr<DNSAdditionalInfo> info;
+-    if (!aTrrServer.IsEmpty() || port != -1) {
+-      info = new DNSAdditionalInfo(aTrrServer, port);
++    // RozeLynx netiface: cancellation must match the original request's
++    // interface-keyed cache entry.
++    if (!aTrrServer.IsEmpty() || port != -1 || !bindIface.IsEmpty()) {
++      info = new DNSAdditionalInfo(aTrrServer, port, bindIface);
+     }
+     rv = dns->CancelAsyncResolveNative(
+         hostName, static_cast<nsIDNSService::ResolveType>(type), flags, info,
+@@ -168,9 +174,11 @@ DNSRequestParent::DNSRequestParent(DNSRequestBase* aRequest)
+ mozilla::ipc::IPCResult DNSRequestParent::RecvCancelDNSRequest(
+     const nsCString& hostName, const nsCString& trrServer, const int32_t& port,
+     const uint16_t& type, const OriginAttributes& originAttributes,
+-    const nsIDNSService::DNSFlags& flags, const nsresult& reason) {
++    const nsIDNSService::DNSFlags& flags, const nsresult& reason,
++    const nsCString& bindIface) {
+   mDNSRequest->OnRecvCancelDNSRequest(hostName, trrServer, port, type,
+-                                      originAttributes, flags, reason);
++                                      originAttributes, flags, reason,
++                                      bindIface);
+   return IPC_OK();
+ }
+ 
+diff --git a/netwerk/dns/DNSRequestParent.h b/netwerk/dns/DNSRequestParent.h
+index 07246d9ba3..e14fefa048 100644
+--- a/netwerk/dns/DNSRequestParent.h
++++ b/netwerk/dns/DNSRequestParent.h
+@@ -32,7 +32,8 @@ class DNSRequestParent : public DNSRequestActor, public PDNSRequestParent {
+       const nsCString& hostName, const nsCString& trrServer,
+       const int32_t& port, const uint16_t& type,
+       const OriginAttributes& originAttributes,
+-      const nsIDNSService::DNSFlags& flags, const nsresult& reason);
++      const nsIDNSService::DNSFlags& flags, const nsresult& reason,
++      const nsCString& bindIface);
+   mozilla::ipc::IPCResult RecvLookupCompleted(const DNSRequestResponse& reply);
+   void ActorDestroy(ActorDestroyReason) override;
+ };
+diff --git a/netwerk/dns/PDNSRequest.ipdl b/netwerk/dns/PDNSRequest.ipdl
+index feb3c70d42..5fd0bdd7f4 100644
+--- a/netwerk/dns/PDNSRequest.ipdl
++++ b/netwerk/dns/PDNSRequest.ipdl
+@@ -25,8 +25,9 @@ both:
+   // Pass args here rather than storing them in the parent; they are only
+   // needed if the request is to be canceled.
+   async CancelDNSRequest(nsCString hostName, nsCString trrServer, int32_t port,
+-                         uint16_t type, OriginAttributes originAttributes,
+-                         DNSFlags flags, nsresult reason);
++                          uint16_t type, OriginAttributes originAttributes,
++                          DNSFlags flags, nsresult reason,
++                          nsCString bindIface);
+   async __delete__();
+ 
+   async LookupCompleted(DNSRequestResponse reply);
+diff --git a/netwerk/dns/TRR.cpp b/netwerk/dns/TRR.cpp
+index b8e97a2325..fc8beac509 100644
+--- a/netwerk/dns/TRR.cpp
++++ b/netwerk/dns/TRR.cpp
+@@ -35,6 +35,8 @@
+ #include "nsITimedChannel.h"
+ #include "nsIURIMutator.h"
+ #include "nsIUploadChannel2.h"
++#include "nsHttpConnectionInfo.h"  // RozeLynx netiface
++#include "nsIRequest.h"            // RozeLynx netiface
+ #include "nsNetUtil.h"
+ #include "nsQueryObject.h"
+ #include "nsStringStream.h"
+@@ -362,6 +364,36 @@
+     }
+   }
+ 
++  // RozeLynx netiface: when this lookup carries an interface assignment, bind
++  // the DoH channel's socket to that interface so encrypted DNS egresses via
++  // the assigned network only. The channel-supplied connection info is used
++  // verbatim by TRRServiceChannel.
++  if (!useOHTTP && mRec && !mRec->mBindIface.IsEmpty()) {
++    nsAutoCString trrHost;
++    nsresult hostRv = dnsURI->GetHost(trrHost);
++    int32_t trrPort = -1;
++    bool isHttps = false;
++    if (NS_SUCCEEDED(hostRv)) {
++      (void)dnsURI->GetPort(&trrPort);
++      isHttps = dnsURI->SchemeIs("https");
++    }
++    if (NS_SUCCEEDED(hostRv) && !trrHost.IsEmpty()) {
++      RefPtr<nsHttpConnectionInfo> netifaceConnInfo =
++          new nsHttpConnectionInfo(trrHost, trrPort, ""_ns, ""_ns, nullptr,
++                                   OriginAttributes(), isHttps);
++      netifaceConnInfo->SetIsTrrServiceChannel(true);
++      netifaceConnInfo->SetBindIface(mRec->mBindIface);
++      // The DoH host itself resolves natively (bootstrap, default route) —
++      // never via TRR (avoids recursion).
++      netifaceConnInfo->SetTRRMode(nsIRequest::TRR_DISABLED_MODE);
++      // v1: QUIC UDP sockets are not bindable.
++      netifaceConnInfo->SetHttp3Policy(Http3Policy::Disabled);
++      internalChannel->SetConnectionInfo(netifaceConnInfo);
++      LOG(("TRR::SendHTTPRequest RozeLynx netiface %s\n",
++           mRec->mBindIface.get()));
++    }
++  }
++
+   if (useGet) {
+     rv = httpChannel->SetRequestMethod("GET"_ns);
+     NS_ENSURE_SUCCESS(rv, rv);
+@@ -628,6 +660,22 @@
+     RecordReason(TRRSkippedReason::TRR_OK);
+     (void)mHostResolver->CompleteLookupByType(mRec, NS_OK, mResult,
+                                               mTRRSkippedReason, mTTL, mPB);
++    // RozeLynx netiface: a successful by-type (HTTPS RR / TXT) lookup must
++    // detach the resolver exactly like the A/AAAA branch above.  OnStopRequest
++    // returns early after On200Response only when UseDefaultServer() is true;
++    // for lookups that carry a custom DoH server (the per-interface
++    // rozelynx.netiface.trr.uri.<ifname>) the same function falls through to
++    // FailData(NS_ERROR_UNKNOWN_HOST), which would complete the record a
++    // SECOND time: the success result is overwritten with a negative entry
++    // and TypeHostRecord::mResolving is decremented twice (1 -> 0 -> -1).
++    // The record is then permanently "resolving": once the negative TTL
++    // expires, ResolveHost can neither satisfy it nor start a new lookup
++    // (!mResolving is false), every HTTPS-RR wait piles callbacks that never
++    // fire, and the connection manager queues transactions until the app's
++    // own JS timeout cancels them - the interface-bound profile's feed stall.
++    // Nulling the pointers makes the fall-through FailData a no-op.
++    mHostResolver = nullptr;
++    mRec = nullptr;
+   }
+ 
+   return NS_OK;
+diff --git a/netwerk/dns/TRRService.cpp b/netwerk/dns/TRRService.cpp
+index bbb6fdd43a..78245d4c90 100644
+--- a/netwerk/dns/TRRService.cpp
++++ b/netwerk/dns/TRRService.cpp
+@@ -248,6 +248,21 @@ void TRRService::SetDetectedTrrURI(const nsACString& aURI) {
+   mURISetByDetection = MaybeSetPrivateURI(aURI);
+ }
+ 
++bool TRRService::IsProviderHost(const nsACString& aHost) const {
++  if (aHost.IsEmpty() || mPrivateURI.IsEmpty()) {
++    return false;
++  }
++  nsCOMPtr<nsIURI> uri;
++  if (NS_FAILED(NS_NewURI(getter_AddRefs(uri), mPrivateURI))) {
++    return false;
++  }
++  nsAutoCString providerHost;
++  if (NS_FAILED(uri->GetAsciiHost(providerHost)) || providerHost.IsEmpty()) {
++    return false;
++  }
++  return providerHost.Equals(aHost, nsCaseInsensitiveCStringComparator);
++}
++
+ bool TRRService::Enabled(nsIRequest::TRRMode aRequestMode) {
+   if (mMode == nsIDNSService::MODE_TRROFF ||
+       aRequestMode == nsIRequest::TRR_DISABLED_MODE) {
+diff --git a/netwerk/dns/TRRService.h b/netwerk/dns/TRRService.h
+index 8417f2963c..4686fe3e49 100644
+--- a/netwerk/dns/TRRService.h
++++ b/netwerk/dns/TRRService.h
+@@ -69,6 +69,11 @@ class TRRService : public TRRServiceBase,
+       const nsACString& aHost,
+       nsIRequest::TRRMode aRequestMode = nsIRequest::TRR_DEFAULT_MODE);
+ 
++  // RozeLynx netiface: true when the host is the origin host of the active
++  // DoH provider URI. Used by the host resolver to keep the provider's own
++  // bootstrap lookups native even for interface-assigned records.
++  bool IsProviderHost(const nsACString& aHost) const;
++
+   bool MaybeBootstrap(const nsACString& possible, nsACString& result);
+   void RecordTRRStatus(TRR* aTrrRequest);
+   bool ParentalControlEnabled() const { return mParentalControlEnabled; }
+diff --git a/netwerk/dns/moz.build b/netwerk/dns/moz.build
+index 2369794f24..186d279eb3 100644
+--- a/netwerk/dns/moz.build
++++ b/netwerk/dns/moz.build
+@@ -105,6 +105,9 @@ GeneratedFile(
+     "etld_data.inc", script="prepare_tlds.py", inputs=["effective_tld_names.dat"]
+ )
+ 
++if CONFIG["MOZ_SYSTEM_HARFBUZZ"]:
++    CXXFLAGS += CONFIG["MOZ_HARFBUZZ_CFLAGS"]
++
+ # need to include etld_data.inc
+ LOCAL_INCLUDES += [
+     "/netwerk/base",
+diff --git a/netwerk/dns/nsDNSService2.cpp b/netwerk/dns/nsDNSService2.cpp
+index d4b0585a40..29c304e7f0 100644
+--- a/netwerk/dns/nsDNSService2.cpp
++++ b/netwerk/dns/nsDNSService2.cpp
+@@ -7,6 +7,7 @@
+ #include "DNSAdditionalInfo.h"
+ #include "TRRService.h"
+ #include "mozilla/ClearOnShutdown.h"
++#include "mozilla/Logging.h"
+ #include "mozilla/Services.h"
+ #include "mozilla/StaticPrefs_network.h"
+ #include "mozilla/StaticPtr.h"
+@@ -47,6 +48,15 @@
+ using namespace mozilla;
+ using namespace mozilla::net;
+ 
++namespace mozilla {
++namespace net {
++// RozeLynx netiface DIAG: reuse the nsHostResolver log module from the DNS
++// API seam (defined in nsHostResolver.cpp) so the diag lands in the same
++// MOZ_LOG_FILE as the resolver/TRR output.
++extern LazyLogModule gHostResolverLog;
++}  // namespace net
++}  // namespace mozilla
++
+ static const char kPrefDnsCacheEntries[] = "network.dnsCacheEntries";
+ static const char kPrefDnsCacheExpiration[] = "network.dnsCacheExpiration";
+ static const char kPrefDnsCacheGrace[] =
+@@ -475,7 +485,8 @@ class nsDNSAsyncRequest final : public nsResolveHostCallback,
+   nsDNSAsyncRequest(nsHostResolver* res, const nsACString& host,
+                     const nsACString& trrServer, uint16_t type,
+                     const OriginAttributes& attrs, nsIDNSListener* listener,
+-                    nsIDNSService::DNSFlags flags, uint16_t af)
++                    nsIDNSService::DNSFlags flags, uint16_t af,
++                    const nsACString& aBindIface)
+       : mResolver(res),
+         mHost(host),
+         mTrrServer(trrServer),
+@@ -483,7 +494,8 @@ class nsDNSAsyncRequest final : public nsResolveHostCallback,
+         mOriginAttributes(attrs),
+         mListener(listener),
+         mFlags(flags),
+-        mAF(af) {}
++        mAF(af),
++        mBindIface(aBindIface) {}
+ 
+   void OnResolveHostComplete(nsHostResolver*, nsHostRecord*, nsresult) override;
+   // Returns TRUE if the DNS listener arg is the same as the member listener
+@@ -502,6 +514,8 @@ class nsDNSAsyncRequest final : public nsResolveHostCallback,
+   nsCOMPtr<nsIDNSListener> mListener;
+   nsIDNSService::DNSFlags mFlags = nsIDNSService::RESOLVE_DEFAULT_FLAGS;
+   uint16_t mAF = 0;
++  // RozeLynx netiface: interface assignment for this lookup.
++  nsCString mBindIface;
+ 
+  private:
+   virtual ~nsDNSAsyncRequest() = default;
+@@ -563,7 +577,7 @@ nsDNSAsyncRequest::Cancel(nsresult reason) {
+   NS_ENSURE_ARG(NS_FAILED(reason));
+   MOZ_DIAGNOSTIC_ASSERT(mResolver, "mResolver should not be null");
+   mResolver->DetachCallback(mHost, mTrrServer, mType, mOriginAttributes, mFlags,
+-                            mAF, this, reason);
++                            mAF, this, reason, mBindIface);
+   return NS_OK;
+ }
+ 
+@@ -1079,10 +1093,27 @@ nsresult nsDNSService::AsyncResolveInternal(
+   uint16_t af =
+       (type != RESOLVE_TYPE_DEFAULT) ? 0 : GetAFForLookup(hostname, flags);
+ 
++  // RozeLynx netiface DIAG (AAAA-seam): report every leak-test-domain lookup
++  // reaching this API seam with type/af/flags and whether it carried an
++  // interface assignment. AAAA (af=6 / RR type 28) lookups with empty
++  // bindIface ride the shared default DoH connection and contaminate bound
++  // tabs; this pinpoints which lookup path drops the interface.
++  if (StringEndsWith(hostname, "ipleak.net"_ns)) {
++    nsAutoCString iface;
++    if (aInfo) {
++      aInfo->GetBindIface(iface);
++    }
++    MOZ_LOG(gHostResolverLog, LogLevel::Info,
++            ("AsyncResolveInternal seam host=%s rtype=%u af=%u flags=%u "
++             "bindIf=%s info=%d\n",
++             hostname.get(), (unsigned)type, (unsigned)af, (unsigned)flags,
++             iface.IsEmpty() ? "-" : iface.get(), aInfo != nullptr));
++  }
++
+   MOZ_ASSERT(listener);
+-  RefPtr<nsDNSAsyncRequest> req =
+-      new nsDNSAsyncRequest(res, hostname, DNSAdditionalInfo::URL(aInfo), type,
+-                            aOriginAttributes, listener, flags, af);
++  RefPtr<nsDNSAsyncRequest> req = new nsDNSAsyncRequest(
++      res, hostname, DNSAdditionalInfo::URL(aInfo), type, aOriginAttributes,
++      listener, flags, af, DNSAdditionalInfo::BindIface(aInfo));
+   if (!req) {
+     return NS_ERROR_OUT_OF_MEMORY;
+   }
+@@ -1096,7 +1127,8 @@ nsresult nsDNSService::AsyncResolveInternal(
+ 
+   rv = res->ResolveHost(req->mHost, DNSAdditionalInfo::URL(aInfo),
+                         DNSAdditionalInfo::Port(aInfo), type,
+-                        req->mOriginAttributes, flags, af, req);
++                        req->mOriginAttributes, flags, af, req,
++                        req->mBindIface);
+   req.forget(result);
+   return rv;
+ }
+@@ -1133,7 +1165,8 @@ nsresult nsDNSService::CancelAsyncResolveInternal(
+       (aType != RESOLVE_TYPE_DEFAULT) ? 0 : GetAFForLookup(hostname, aFlags);
+ 
+   res->CancelAsyncRequest(hostname, DNSAdditionalInfo::URL(aInfo), aType,
+-                          aOriginAttributes, aFlags, af, aListener, aReason);
++                          aOriginAttributes, aFlags, af, aListener, aReason,
++                          DNSAdditionalInfo::BindIface(aInfo));
+   return NS_OK;
+ }
+ 
+diff --git a/netwerk/dns/nsHostRecord.cpp b/netwerk/dns/nsHostRecord.cpp
+index 6119e4736b..736d542cb6 100644
+--- a/netwerk/dns/nsHostRecord.cpp
++++ b/netwerk/dns/nsHostRecord.cpp
+@@ -60,14 +60,16 @@ struct HostResolverMarker {
+ 
+ nsHostKey::nsHostKey(const nsACString& aHost, const nsACString& aTrrServer,
+                      uint16_t aType, nsIDNSService::DNSFlags aFlags,
+-                     uint16_t aAf, bool aPb, const nsACString& aOriginsuffix)
++                     uint16_t aAf, bool aPb, const nsACString& aOriginsuffix,
++                     const nsACString& aBindIface)
+     : host(aHost),
+       mTrrServer(aTrrServer),
+       type(aType),
+       flags(aFlags),
+       af(aAf),
+       pb(aPb),
+-      originSuffix(aOriginsuffix) {}
++      originSuffix(aOriginsuffix),
++      mBindIface(aBindIface) {}
+ 
+ nsHostKey::nsHostKey(const nsHostKey& other)
+     : host(other.host),
+@@ -76,18 +78,21 @@ nsHostKey::nsHostKey(const nsHostKey& other)
+       flags(other.flags),
+       af(other.af),
+       pb(other.pb),
+-      originSuffix(other.originSuffix) {}
++      originSuffix(other.originSuffix),
++      mBindIface(other.mBindIface) {}
+ 
+ bool nsHostKey::operator==(const nsHostKey& other) const {
+   return host == other.host && mTrrServer == other.mTrrServer &&
+          type == other.type &&
+          RES_KEY_FLAGS(flags) == RES_KEY_FLAGS(other.flags) && af == other.af &&
+-         originSuffix == other.originSuffix;
++         originSuffix == other.originSuffix &&
++         mBindIface == other.mBindIface;
+ }
+ 
+ PLDHashNumber nsHostKey::Hash() const {
+   return AddToHash(HashString(host), HashString(mTrrServer), type,
+-                   RES_KEY_FLAGS(flags), af, HashString(originSuffix));
++                   RES_KEY_FLAGS(flags), af, HashString(originSuffix),
++                   HashString(mBindIface));
+ }
+ 
+ size_t nsHostKey::SizeOfExcludingThis(
+@@ -96,6 +101,7 @@ size_t nsHostKey::SizeOfExcludingThis(
+   n += host.SizeOfExcludingThisIfUnshared(mallocSizeOf);
+   n += mTrrServer.SizeOfExcludingThisIfUnshared(mallocSizeOf);
+   n += originSuffix.SizeOfExcludingThisIfUnshared(mallocSizeOf);
++  n += mBindIface.SizeOfExcludingThisIfUnshared(mallocSizeOf);
+   return n;
+ }
+ 
+diff --git a/netwerk/dns/nsHostRecord.h b/netwerk/dns/nsHostRecord.h
+index b7cc5b7127..abd6f9111c 100644
+--- a/netwerk/dns/nsHostRecord.h
++++ b/netwerk/dns/nsHostRecord.h
+@@ -83,9 +83,12 @@ struct nsHostKey {
+   uint16_t af = 0;
+   bool pb = false;
+   const nsCString originSuffix;
++  // RozeLynx netiface: interface assignment partitions the DNS cache.
++  const nsCString mBindIface;
+   explicit nsHostKey(const nsACString& host, const nsACString& aTrrServer,
+                      uint16_t type, nsIDNSService::DNSFlags flags, uint16_t af,
+-                     bool pb, const nsACString& originSuffix);
++                     bool pb, const nsACString& originSuffix,
++                     const nsACString& aBindIface = ""_ns);
+   explicit nsHostKey(const nsHostKey& other);
+   bool operator==(const nsHostKey& other) const;
+   size_t SizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+diff --git a/netwerk/dns/nsHostResolver.cpp b/netwerk/dns/nsHostResolver.cpp
+index 2831816b61..6830d469c9 100644
+--- a/netwerk/dns/nsHostResolver.cpp
++++ b/netwerk/dns/nsHostResolver.cpp
+@@ -447,7 +447,8 @@ nsresult nsHostResolver::ResolveHost(const nsACString& aHost,
+                                      int32_t aPort, uint16_t type,
+                                      const OriginAttributes& aOriginAttributes,
+                                      nsIDNSService::DNSFlags flags, uint16_t af,
+-                                     nsResolveHostCallback* aCallback) {
++                                     nsResolveHostCallback* aCallback,
++                                     const nsACString& aBindIface) {
+   nsAutoCString host(aHost);
+   NS_ENSURE_TRUE(!host.IsEmpty(), NS_ERROR_UNEXPECTED);
+ 
+@@ -527,7 +528,8 @@ nsresult nsHostResolver::ResolveHost(const nsACString& aHost,
+     }
+ 
+     nsHostKey key(host, aTrrServer, type, flags, af,
+-                  (aOriginAttributes.IsPrivateBrowsing()), originSuffix);
++                  (aOriginAttributes.IsPrivateBrowsing()), originSuffix,
++                  aBindIface);
+ 
+     // Fast paths: resolve directly without touching the record DB.
+     // `result` is set and the callback fires outside the lock.
+@@ -745,7 +747,7 @@ bool nsHostResolver::OtherFamilyHasUsablePositiveResult(
+ 
+   const nsHostKey key(aKey.host, aKey.mTrrServer,
+                       nsIDNSService::RESOLVE_TYPE_DEFAULT, aFlags, otherAf,
+-                      aKey.pb, aKey.originSuffix);
++                      aKey.pb, aKey.originSuffix, aKey.mBindIface);
+   RefPtr<nsHostRecord> rec = mRecordDB.Get(key);
+   if (!rec) {
+     return false;
+@@ -783,8 +785,8 @@ bool nsHostResolver::OtherFamilyHasUsablePositiveResult(
+ already_AddRefed<nsHostRecord> nsHostResolver::FromUnspecEntry(
+     nsHostRecord* aRec, const nsACString& aHost, const nsACString& aTrrServer,
+     const nsACString& aOriginSuffix, uint16_t aType,
+-    nsIDNSService::DNSFlags aFlags, uint16_t af, bool aPb, nsresult& aStatus,
+-    bool& aFromStaleCache) {
++    nsIDNSService::DNSFlags aFlags, uint16_t af, bool aPb, nsresult& aStatus,
++    bool& aFromStaleCache, const nsACString& aBindIface) {
+   RefPtr<nsHostRecord> result = nullptr;
+   // If this is an IPV4 or IPV6 specific request, check if there is
+   // an AF_UNSPEC entry we can use. Otherwise, hit the resolver...
+@@ -768,7 +771,7 @@ already_AddRefed<nsHostRecord> nsHostResolver::FromUnspecEntry(
+ 
+     const nsHostKey unspecKey(aHost, aTrrServer,
+                               nsIDNSService::RESOLVE_TYPE_DEFAULT, aFlags,
+-                              PR_AF_UNSPEC, aPb, aOriginSuffix);
++                              PR_AF_UNSPEC, aPb, aOriginSuffix, aBindIface);
+     RefPtr<nsHostRecord> unspecRec = mRecordDB.Get(unspecKey);
+ 
+     TimeStamp now = TimeStamp::NowLoRes();
+@@ -856,7 +859,8 @@ already_AddRefed<nsHostRecord> nsHostResolver::FromUnspecEntry(
+ void nsHostResolver::DetachCallback(
+     const nsACString& host, const nsACString& aTrrServer, uint16_t aType,
+     const OriginAttributes& aOriginAttributes, nsIDNSService::DNSFlags flags,
+-    uint16_t af, nsResolveHostCallback* aCallback, nsresult status) {
++    uint16_t af, nsResolveHostCallback* aCallback, nsresult status,
++    const nsACString& aBindIface) {
+   RefPtr<nsHostRecord> rec;
+   RefPtr<nsResolveHostCallback> callback(aCallback);
+ 
+@@ -868,7 +872,8 @@ void nsHostResolver::DetachCallback(
+     aOriginAttributes.CreateSuffix(originSuffix);
+ 
+     nsHostKey key(host, aTrrServer, aType, flags, af,
+-                  (aOriginAttributes.IsPrivateBrowsing()), originSuffix);
++                  (aOriginAttributes.IsPrivateBrowsing()), originSuffix,
++                  aBindIface);
+     RefPtr<nsHostRecord> entry = mRecordDB.Get(key);
+     if (entry) {
+       // walk list looking for |callback|... we cannot assume
+@@ -1203,6 +1208,38 @@ nsresult nsHostResolver::NameLookup(nsHostRecord* rec) {
+ 
+   ComputeEffectiveTRRMode(rec);
+ 
++  // RozeLynx netiface: assigned lookups never fall back to native
++  // resolution — getaddrinfo egresses on the default routing table and
++  // cannot be bound, which would leak DNS for assigned tabs/containers.
++  // The RESOLVE_DISABLE_TRR guard keeps the DoH host's own bootstrap
++  // lookup native (avoids TRR recursion).
++  // The mTrrServer test is load-bearing, not a nicety.  Forcing TRR-only on a
++  // record that has no resolver to talk to makes the record permanently
++  // unresolvable: the block below also suppresses the native retry, so nothing
++  // can ever satisfy it.  A profile that binds an interface without setting
++  // rozelynx.netiface.trr.uri.<ifname> OR network.trr.uri lands here for every
++  // hostname that needs a fresh lookup, which is why a WebSocket to a new host
++  // failed while the page's already-cached host kept working.  With no server
++  // there is no per-interface DoH to protect, so leave the mode stock.
++  if (!rec->mBindIface.IsEmpty() && !rec->mTrrServer.IsEmpty() &&
++      !(rec->flags & nsIDNSService::RESOLVE_DISABLE_TRR) &&
++      !(TRRService::Get() &&
++        (TRRService::Get()->Mode() == nsIDNSService::MODE_NATIVEONLY ||
++         TRRService::Get()->Mode() == nsIDNSService::MODE_TRROFF))) {
++    if (TRRService::Get() && TRRService::Get()->IsProviderHost(rec->host)) {
++      // RozeLynx netiface: lookups for the DoH provider's OWN host must go
++      // native even when bound to an interface - a TRR-only lookup would
++      // recurse into the very DoH connection it is trying to bootstrap.
++      LOG(("NameLookup: %s RozeLynx netiface %s - provider host, native\n",
++           rec->host.get(), rec->mBindIface.get()));
++      rec->mEffectiveTRRMode = nsIRequest::TRR_DISABLED_MODE;
++    } else {
++      LOG(("NameLookup: %s RozeLynx netiface %s - forcing TRR-only\n",
++           rec->host.get(), rec->mBindIface.get()));
++      rec->mEffectiveTRRMode = nsIRequest::TRR_ONLY_MODE;
++    }
++  }
++
+   if (!rec->mTrrServer.IsEmpty()) {
+     LOG(("NameLookup: %s use trr:%s", rec->host.get(), rec->mTrrServer.get()));
+     if (rec->mEffectiveTRRMode != nsIRequest::TRR_ONLY_MODE) {
+@@ -1368,6 +1397,54 @@ void nsHostResolver::AddToEvictionQ(nsHostRecord* rec) {
+ bool nsHostResolver::MaybeRetryTRRLookup(
+     AddrHostRecord* aAddrRec, nsresult aFirstAttemptStatus,
+     TRRSkippedReason aFirstAttemptSkipReason, nsresult aChannelStatus) {
++  // RozeLynx netiface: assigned lookups fail closed — a native retry would
++  // leak DNS via the default route.
++  // Only deny the native retry when the record was actually routed to a DoH
++  // server.  With no mTrrServer the lookup never left via TRR, so retrying
++  // natively leaks nothing - it is the only remaining path, and suppressing it
++  // is what turned a missing resolver preference into a dead hostname.
++  if (!aAddrRec->mBindIface.IsEmpty() && !aAddrRec->mTrrServer.IsEmpty()) {
++    // "Fail closed" must mean "never fall back to native", not "die on any
++    // hiccup".  A definitive outcome - the DoH server answered (success,
++    // NXDOMAIN, no-answers) or the HTTP exchange itself completed with a
++    // server-level error - is honoured with no retry of any kind.  A
++    // TRANSPORT failure (channel reset, timeout, refused - aChannelStatus
++    // failed, so no DNS answer ever existed) is retried ONCE over the same
++    // bound DoH path on a fresh connection.  The retry egresses the assigned
++    // interface exactly like the first attempt, so this is not a leak; it is
++    // the same DoH lookup with a new socket.
++    //
++    // Without this, one dead pooled DoH connection wedged every hostname it
++    // touched: the lookup failed closed, the failure became a negative
++    // record (60s), network.dns.refresh_negative_addr_on_use defaults to
++    // false so the negative is served without renewal, and the page sat dead
++    // until the user rebound the interface - whose only real effect was the
++    // DNS cache flush.  The WebSocket stayed alive through the same window
++    // because WebSocketChannel is not interface-bound and unbound mode-2
++    // lookups fall back to native, which is why the symptom looked like
++    // "the page is stuck but the socket works".
++    bool definitive =
++        NS_SUCCEEDED(aFirstAttemptStatus) ||
++        aFirstAttemptStatus == NS_ERROR_DEFINITIVE_UNKNOWN_HOST ||
++        NS_SUCCEEDED(aChannelStatus);
++    if (!definitive && aAddrRec->mTrrAttempts == 1 && DoRetryTRR(aAddrRec)) {
++      LOG(("MaybeRetryTRRLookup: RozeLynx netiface %s - transport failure, "
++           "retrying TRR on a fresh connection\n",
++           aAddrRec->mBindIface.get()));
++      return true;
++    }
++    // Only log when the lookup actually FAILED: this function runs on every
++    // bound-record completion, and an unconditional line here made successful
++    // lookups look like fail-closed ones during log triage.
++    if (NS_FAILED(aFirstAttemptStatus)) {
++      LOG(("MaybeRetryTRRLookup: RozeLynx netiface %s - no native fallback "
++           "(failed lookup: status=%X channel=%X)\n",
++           aAddrRec->mBindIface.get(), (unsigned)aFirstAttemptStatus,
++           (unsigned)aChannelStatus));
++    }
++    return false;
++  }
++
+   if (NS_FAILED(aFirstAttemptStatus) &&
+       (aChannelStatus == NS_ERROR_PROXY_UNAUTHORIZED ||
+        aChannelStatus == NS_ERROR_PROXY_AUTHENTICATION_FAILED) &&
+@@ -1755,9 +1828,8 @@ void nsHostResolver::OnResolveComplete(nsHostRecord* aRec) {
+ void nsHostResolver::CancelAsyncRequest(
+     const nsACString& host, const nsACString& aTrrServer, uint16_t aType,
+     const OriginAttributes& aOriginAttributes, nsIDNSService::DNSFlags flags,
+-    uint16_t af, nsIDNSListener* aListener, nsresult status)
+-
+-{
++    uint16_t af, nsIDNSListener* aListener, nsresult status,
++    const nsACString& aBindIface) {
+   CallbackArray callbacks;
+   RefPtr<nsHostRecord> rec;
+ 
+@@ -1771,7 +1843,8 @@ void nsHostResolver::CancelAsyncRequest(
+     // Lookup the host record associated with host, flags & address family
+ 
+     nsHostKey key(host, aTrrServer, aType, flags, af,
+-                  (aOriginAttributes.IsPrivateBrowsing()), originSuffix);
++                  (aOriginAttributes.IsPrivateBrowsing()), originSuffix,
++                  aBindIface);
+     rec = mRecordDB.Get(key);
+     if (rec) {
+       for (RefPtr<nsResolveHostCallback> c : rec->mCallbacks) {
+diff --git a/netwerk/dns/nsHostResolver.h b/netwerk/dns/nsHostResolver.h
+index b3d4d7c5e5..57968bd57d 100644
+--- a/netwerk/dns/nsHostResolver.h
++++ b/netwerk/dns/nsHostResolver.h
+@@ -121,7 +121,8 @@ class nsHostResolver : public nsISupports, public AHostResolver {
+                        int32_t aPort, uint16_t type,
+                        const mozilla::OriginAttributes& aOriginAttributes,
+                        nsIDNSService::DNSFlags flags, uint16_t af,
+-                       nsResolveHostCallback* callback);
++                       nsResolveHostCallback* callback,
++                       const nsACString& aBindIface = ""_ns);
+ 
+   nsHostRecord* InitRecord(const nsHostKey& key);
+   mozilla::net::NetworkConnectivityService* GetNCS() {
+@@ -150,7 +151,8 @@ class nsHostResolver : public nsISupports, public AHostResolver {
+                       uint16_t type,
+                       const mozilla::OriginAttributes& aOriginAttributes,
+                       nsIDNSService::DNSFlags flags, uint16_t af,
+-                      nsResolveHostCallback* callback, nsresult status);
++                      nsResolveHostCallback* callback, nsresult status,
++                      const nsACString& aBindIface = ""_ns);
+ 
+   /**
+    * Cancels an async request associated with the hostname, originAttributes,
+@@ -160,10 +162,11 @@ class nsHostResolver : public nsISupports, public AHostResolver {
+    * with the host record, it is removed from any request queues it might be on.
+    */
+   void CancelAsyncRequest(const nsACString& host, const nsACString& trrServer,
+-                          uint16_t type,
++                          uint16_t aType,
+                           const mozilla::OriginAttributes& aOriginAttributes,
+                           nsIDNSService::DNSFlags flags, uint16_t af,
+-                          nsIDNSListener* aListener, nsresult status);
++                          nsIDNSListener* aListener, nsresult status,
++                          const nsACString& aBindIface = ""_ns);
+ 
+   size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+ 
+@@ -280,7 +283,8 @@ class nsHostResolver : public nsISupports, public AHostResolver {
+   already_AddRefed<nsHostRecord> FromUnspecEntry(
+       nsHostRecord* aRec, const nsACString& aHost, const nsACString& aTrrServer,
+       const nsACString& aOriginSuffix, uint16_t aType,
+-      nsIDNSService::DNSFlags aFlags, uint16_t af, bool aPb, nsresult& aStatus,
+-      bool& aFromStaleCache) MOZ_REQUIRES(mDBLock) MOZ_REQUIRES(mQueue.mLock);
++      nsIDNSService::DNSFlags aFlags, uint16_t af, bool aPb, nsresult& aStatus,
++      bool& aFromStaleCache, const nsACString& aBindIface = ""_ns)
++          MOZ_REQUIRES(mDBLock) MOZ_REQUIRES(mQueue.mLock);
+ 
+   bool OtherFamilyHasUsablePositiveResult(const nsHostKey& aKey, uint16_t aAf,
+diff --git a/netwerk/dns/nsIDNSAdditionalInfo.idl b/netwerk/dns/nsIDNSAdditionalInfo.idl
+index 4f266d7937..adb24ad1c2 100644
+--- a/netwerk/dns/nsIDNSAdditionalInfo.idl
++++ b/netwerk/dns/nsIDNSAdditionalInfo.idl
+@@ -9,4 +9,11 @@ interface nsIDNSAdditionalInfo : nsISupports
+ {
+    readonly attribute int32_t port;
+    readonly attribute ACString resolverURL;
++   /**
++    * RozeLynx netiface: network interface this lookup is assigned to.
++    * Partitions the DNS cache per interface and forces TRR (no native
++    * fallback) so assigned loads never leak DNS to the default route.
++    * Empty string for unassigned lookups.
++    */
++   readonly attribute ACString bindIface;
+ };
+diff --git a/netwerk/ipc/NeckoChannelParams.ipdlh b/netwerk/ipc/NeckoChannelParams.ipdlh
+index 8a60af1bf3..af4edcdde4 100644
+--- a/netwerk/ipc/NeckoChannelParams.ipdlh
++++ b/netwerk/ipc/NeckoChannelParams.ipdlh
+@@ -481,6 +481,7 @@ struct HttpConnectionInfoCloneArgs
+   nsCString echConfig;
+   bool happyEyeballsEnabled;
+   ProxyInfoCloneArgs[] proxyInfo;
++  nsCString bindIface; // RozeLynx netiface: SO_BINDTODEVICE interface for this connection
+ };
+ 
+ struct ConsoleReportCollected {
+diff --git a/netwerk/ipc/NeckoParent.cpp b/netwerk/ipc/NeckoParent.cpp
+index e3a5c8aae0..dd9df53404 100644
+--- a/netwerk/ipc/NeckoParent.cpp
++++ b/netwerk/ipc/NeckoParent.cpp
+@@ -478,7 +478,7 @@ mozilla::ipc::IPCResult NeckoParent::RecvPUDPSocketConstructor(
+ already_AddRefed<PDNSRequestParent> NeckoParent::AllocPDNSRequestParent(
+     const nsACString& aHost, const nsACString& aTrrServer, const int32_t& aPort,
+     const uint16_t& aType, const OriginAttributes& aOriginAttributes,
+-    const nsIDNSService::DNSFlags& aFlags) {
++    const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface) {
+   RefPtr<DNSRequestHandler> handler = new DNSRequestHandler();
+   RefPtr<DNSRequestParent> actor = new DNSRequestParent(handler);
+   return actor.forget();
+@@ -488,17 +488,22 @@ mozilla::ipc::IPCResult NeckoParent::RecvPDNSRequestConstructor(
+     PDNSRequestParent* aActor, const nsACString& aHost,
+     const nsACString& aTrrServer, const int32_t& aPort, const uint16_t& aType,
+     const OriginAttributes& aOriginAttributes,
+-    const nsIDNSService::DNSFlags& aFlags) {
++    const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface) {
+   if (!aTrrServer.IsEmpty()) {
+     return IPC_FAIL(this, "Content process should not specify TRR server");
+   }
++  // RozeLynx netiface: interface assignment is stamped by the parent process
++  // only; a content process must never request binding to an interface.
++  if (!aBindIface.IsEmpty()) {
++    return IPC_FAIL(this, "Content process should not specify bind interface");
++  }
+ 
+   RefPtr<DNSRequestParent> actor =
+       mozilla::ipc::ActorCast<DNSRequestParent>(aActor);
+   RefPtr<DNSRequestHandler> handler =
+       actor->GetDNSRequest()->AsDNSRequestHandler();
+   handler->DoAsyncResolve(aHost, aTrrServer, aPort, aType, aOriginAttributes,
+-                          aFlags);
++                          aFlags, aBindIface);
+   return IPC_OK();
+ }
+ 
+diff --git a/netwerk/ipc/NeckoParent.h b/netwerk/ipc/NeckoParent.h
+index 01dfcc781b..cec3feb7a4 100644
+--- a/netwerk/ipc/NeckoParent.h
++++ b/netwerk/ipc/NeckoParent.h
+@@ -132,12 +132,13 @@ class NeckoParent : public PNeckoParent {
+       const nsACString& aHost, const nsACString& aTrrServer,
+       const int32_t& aPort, const uint16_t& aType,
+       const OriginAttributes& aOriginAttributes,
+-      const nsIDNSService::DNSFlags& aFlags);
++      const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface);
+   virtual mozilla::ipc::IPCResult RecvPDNSRequestConstructor(
+       PDNSRequestParent* actor, const nsACString& aHost,
+       const nsACString& trrServer, const int32_t& aPort, const uint16_t& type,
+       const OriginAttributes& aOriginAttributes,
+-      const nsIDNSService::DNSFlags& flags) override;
++      const nsIDNSService::DNSFlags& flags,
++      const nsACString& aBindIface) override;
+   mozilla::ipc::IPCResult RecvSpeculativeConnect(
+       PBrowserParent* aBrowser, const IPC::SerializedLoadContext& aSerialized,
+       nsIURI* aURI, nsIPrincipal* aPrincipal,
+diff --git a/netwerk/ipc/PNecko.ipdl b/netwerk/ipc/PNecko.ipdl
+index 8bc53c5c2c..2345e44286 100644
+--- a/netwerk/ipc/PNecko.ipdl
++++ b/netwerk/ipc/PNecko.ipdl
+@@ -84,7 +84,7 @@ parent:
+ 
+   async PDNSRequest(nsCString hostName, nsCString trrServer, int32_t port,
+                     uint16_t type, OriginAttributes originAttributes,
+-                    DNSFlags flags);
++                    DNSFlags flags, nsCString bindIface);
+ 
+   async PDocumentChannel(MaybeDiscardedBrowsingContext browsingContext,
+                          DocumentChannelCreationArgs args);
+diff --git a/netwerk/ipc/PSocketProcess.ipdl b/netwerk/ipc/PSocketProcess.ipdl
+index 677368cf75..c6039d0072 100644
+--- a/netwerk/ipc/PSocketProcess.ipdl
++++ b/netwerk/ipc/PSocketProcess.ipdl
+@@ -241,7 +241,7 @@ child:
+ both:
+   async PDNSRequest(nsCString hostName, nsCString trrServer, int32_t port,
+                     uint16_t type, OriginAttributes originAttributes,
+-                    DNSFlags flags);
++                    DNSFlags flags, nsCString bindIface);
+ };
+ 
+ } // namespace net
+diff --git a/netwerk/ipc/SocketProcessChild.cpp b/netwerk/ipc/SocketProcessChild.cpp
+index 35cf6d722a..4da53cca5c 100644
+--- a/netwerk/ipc/SocketProcessChild.cpp
++++ b/netwerk/ipc/SocketProcessChild.cpp
+@@ -494,7 +494,7 @@ SocketProcessChild::AllocPAltSvcTransactionChild(
+ already_AddRefed<PDNSRequestChild> SocketProcessChild::AllocPDNSRequestChild(
+     const nsACString& aHost, const nsACString& aTrrServer, const int32_t& aPort,
+     const uint16_t& aType, const OriginAttributes& aOriginAttributes,
+-    const nsIDNSService::DNSFlags& aFlags) {
++    const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface) {
+   RefPtr<DNSRequestHandler> handler = new DNSRequestHandler();
+   RefPtr<DNSRequestChild> actor = new DNSRequestChild(handler);
+   return actor.forget();
+@@ -504,13 +504,13 @@ mozilla::ipc::IPCResult SocketProcessChild::RecvPDNSRequestConstructor(
+     PDNSRequestChild* aActor, const nsACString& aHost,
+     const nsACString& aTrrServer, const int32_t& aPort, const uint16_t& aType,
+     const OriginAttributes& aOriginAttributes,
+-    const nsIDNSService::DNSFlags& aFlags) {
++    const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface) {
+   RefPtr<DNSRequestChild> actor =
+       mozilla::ipc::ActorCast<DNSRequestChild>(aActor);
+   RefPtr<DNSRequestHandler> handler =
+       actor->GetDNSRequest()->AsDNSRequestHandler();
+   handler->DoAsyncResolve(aHost, aTrrServer, aPort, aType, aOriginAttributes,
+-                          aFlags);
++                          aFlags, aBindIface);
+   return IPC_OK();
+ }
+ 
+diff --git a/netwerk/ipc/SocketProcessChild.h b/netwerk/ipc/SocketProcessChild.h
+index 7e15a05538..51722d404f 100644
+--- a/netwerk/ipc/SocketProcessChild.h
++++ b/netwerk/ipc/SocketProcessChild.h
+@@ -94,12 +94,13 @@ class SocketProcessChild final : public PSocketProcessChild {
+       const nsACString& aHost, const nsACString& aTrrServer,
+       const int32_t& aPort, const uint16_t& aType,
+       const OriginAttributes& aOriginAttributes,
+-      const nsIDNSService::DNSFlags& aFlags);
++      const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface);
+   mozilla::ipc::IPCResult RecvPDNSRequestConstructor(
+       PDNSRequestChild* aActor, const nsACString& aHost,
+       const nsACString& aTrrServer, const int32_t& aPort, const uint16_t& aType,
+       const OriginAttributes& aOriginAttributes,
+-      const nsIDNSService::DNSFlags& aFlags) override;
++      const nsIDNSService::DNSFlags& aFlags,
++      const nsACString& aBindIface) override;
+ 
+   void AddDataBridgeToMap(uint64_t aChannelId,
+                           BackgroundDataBridgeParent* aActor);
+diff --git a/netwerk/ipc/SocketProcessParent.cpp b/netwerk/ipc/SocketProcessParent.cpp
+index 2736cf0c33..0abbda875e 100644
+--- a/netwerk/ipc/SocketProcessParent.cpp
++++ b/netwerk/ipc/SocketProcessParent.cpp
+@@ -199,7 +199,7 @@ SocketProcessParent::AllocPWebrtcTCPSocketParent(const Maybe<TabId>& aTabId) {
+ already_AddRefed<PDNSRequestParent> SocketProcessParent::AllocPDNSRequestParent(
+     const nsACString& aHost, const nsACString& aTrrServer, const int32_t& port,
+     const uint16_t& aType, const OriginAttributes& aOriginAttributes,
+-    const nsIDNSService::DNSFlags& aFlags) {
++    const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface) {
+   RefPtr<DNSRequestHandler> handler = new DNSRequestHandler();
+   RefPtr<DNSRequestParent> actor = new DNSRequestParent(handler);
+   return actor.forget();
+@@ -209,13 +209,13 @@ mozilla::ipc::IPCResult SocketProcessParent::RecvPDNSRequestConstructor(
+     PDNSRequestParent* aActor, const nsACString& aHost,
+     const nsACString& aTrrServer, const int32_t& port, const uint16_t& aType,
+     const OriginAttributes& aOriginAttributes,
+-    const nsIDNSService::DNSFlags& aFlags) {
++    const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface) {
+   RefPtr<DNSRequestParent> actor =
+       mozilla::ipc::ActorCast<DNSRequestParent>(aActor);
+   RefPtr<DNSRequestHandler> handler =
+       actor->GetDNSRequest()->AsDNSRequestHandler();
+   handler->DoAsyncResolve(aHost, aTrrServer, port, aType, aOriginAttributes,
+-                          aFlags);
++                          aFlags, aBindIface);
+   return IPC_OK();
+ }
+ 
+diff --git a/netwerk/ipc/SocketProcessParent.h b/netwerk/ipc/SocketProcessParent.h
+index 8da180af42..55a99f9b0b 100644
+--- a/netwerk/ipc/SocketProcessParent.h
++++ b/netwerk/ipc/SocketProcessParent.h
+@@ -57,12 +57,13 @@ class SocketProcessParent final
+       const nsACString& aHost, const nsACString& aTrrServer,
+       const int32_t& port, const uint16_t& aType,
+       const OriginAttributes& aOriginAttributes,
+-      const nsIDNSService::DNSFlags& aFlags);
++      const nsIDNSService::DNSFlags& aFlags, const nsACString& aBindIface);
+   virtual mozilla::ipc::IPCResult RecvPDNSRequestConstructor(
+       PDNSRequestParent* actor, const nsACString& aHost,
+       const nsACString& trrServer, const int32_t& port, const uint16_t& type,
+       const OriginAttributes& aOriginAttributes,
+-      const nsIDNSService::DNSFlags& flags) override;
++      const nsIDNSService::DNSFlags& flags,
++      const nsACString& aBindIface) override;
+ 
+   void ActorDestroy(ActorDestroyReason aWhy) override;
+   bool SendRequestMemoryReport(const uint32_t& aGeneration,
+diff --git a/netwerk/protocol/http/ConnectionEntry.cpp b/netwerk/protocol/http/ConnectionEntry.cpp
+index 3818ff2138..892d22708e 100644
+--- a/netwerk/protocol/http/ConnectionEntry.cpp
++++ b/netwerk/protocol/http/ConnectionEntry.cpp
+@@ -1082,6 +1082,17 @@ bool ConnectionEntry::MaybeProcessCoalescingKeys(
+     newKey.AppendLiteral("/[");
+     newKey.Append(suffix);
+     newKey.AppendLiteral("]viaDNS");
++    // RozeLynx netiface: make the viaDNS coalescing key
++    // interface-pure so the coalescing hash lists never mix
++    // connections from different interfaces (mirrors the [bind:]
++    // suffix in BuildOriginFrameHashKey). Registration
++    // (UpdateCoalescingForNewConn) and lookup (FindCoalescableConnection)
++    // both use this entry-built key, so the tag is symmetric.
++    if (!mConnInfo->GetBindIface().IsEmpty()) {
++      newKey.AppendLiteral("[bind:");
++      newKey.Append(mConnInfo->GetBindIface());
++      newKey.AppendLiteral("]");
++    }
+     HashNumber hash = HashString(newKey);
+     LOG(
+         ("ConnectionEntry::MaybeProcessCoalescingKeys "
+diff --git a/netwerk/protocol/http/ConnectionEstablisher.cpp b/netwerk/protocol/http/ConnectionEstablisher.cpp
+index f415c67ef9..ef0c2a62c6 100644
+--- a/netwerk/protocol/http/ConnectionEstablisher.cpp
++++ b/netwerk/protocol/http/ConnectionEstablisher.cpp
+@@ -537,6 +537,12 @@ nsresult TCPConnectionEstablisher::CreateAndConfigureSocketTransport() {
+     return rv;
+   }
+ 
++  // RozeLynx netiface: bind the socket to the assigned interface before the
++  // connection is initiated. No-op when the conn info carries no assignment.
++  if (!mConnInfo->GetBindIface().IsEmpty()) {
++    socketTransport->SetBindIface(mConnInfo->GetBindIface());
++  }
++
+   uint32_t tmpFlags = 0;
+   if (mCaps & NS_HTTP_REFRESH_DNS) {
+     tmpFlags = nsISocketTransport::BYPASS_CACHE;
+diff --git a/netwerk/protocol/http/DnsAndConnectSocket.cpp b/netwerk/protocol/http/DnsAndConnectSocket.cpp
+index 0c3a454e93..18b23f8dbc 100644
+--- a/netwerk/protocol/http/DnsAndConnectSocket.cpp
++++ b/netwerk/protocol/http/DnsAndConnectSocket.cpp
+@@ -15,6 +15,7 @@
+ #include "mozilla/SyncRunnable.h"
+ #include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
+ #include "mozilla/net/NeckoChannelParams.h"  // For HttpActivityArgs.
++#include "DNSAdditionalInfo.h"  // RozeLynx netiface
+ #include "nsDNSService2.h"
+ #include "nsHttpConnection.h"
+ #include "nsHttpConnectionMgr.h"
+@@ -1233,6 +1234,14 @@
+   }
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
++  // RozeLynx netiface: bind the socket to the assigned interface before the
++  // connection is initiated, including TRR/DoH channels (their sockets must
++  // not egress on the ambient default route). No-op when the conn info
++  // carries no assignment.
++  if (!ci->GetBindIface().IsEmpty()) {
++    socketTransport->SetBindIface(ci->GetBindIface());
++  }
++
+   uint32_t tmpFlags = 0;
+   if (dnsAndSock->mCaps & NS_HTTP_REFRESH_DNS) {
+     tmpFlags = nsISocketTransport::BYPASS_CACHE;
+@@ -1383,12 +1392,37 @@
+         nullptr, NS_NET_STATUS_RESOLVING_HOST, 0);
+   }
+ 
++  // RozeLynx netiface: carry the interface assignment into the LOOKUP, not
++  // only onto the socket. Binding the socket in SetupStreams while passing
++  // nullptr here left the resolution itself unbound, so the query went out on
++  // the ambient default route: for a DoH channel that is the bootstrap for the
++  // TRR endpoint, which stock forces to TRR_DISABLED to avoid recursing into
++  // itself, and for an assigned tab it is that tab's own hostname. Either way
++  // the system resolver saw the name over the wrong interface.
++  //
++  // One of two such sites. HappyEyeballsConnectionAttempt::DNSLookup already
++  // passes the interface; nsSocketTransport::ResolveHost is the other. Left null
++  // here the seam shows up as `bindIf=- info=0 flags=79872` - 0x13800 being
++  // IGNORE_SOCKS_DNS | TRR_DISABLED | WANT_RECORD_ON_ERROR, a combination no
++  // other call site produces.
++  nsCOMPtr<nsIDNSAdditionalInfo> rozelynxInfo;
++  {
++    nsCString bindIface = dnsAndSock->mConnInfo->GetBindIface();
++    if (!bindIface.IsEmpty()) {
++      // Empty resolver URL and port -1, which is what a null additional-info
++      // already reads as downstream: DNSAdditionalInfo::URL/Port return ""/-1
++      // for both, so resolver selection is unchanged and the interface is
++      // purely additive.
++      rozelynxInfo = new DNSAdditionalInfo(""_ns, -1, bindIface);
++    }
++  }
++
+   nsresult rv = NS_OK;
+   do {
+     rv = dns->AsyncResolveNative(
+         mHost, nsIDNSService::RESOLVE_TYPE_DEFAULT,
+-        mDnsFlags | nsIDNSService::RESOLVE_WANT_RECORD_ON_ERROR, nullptr,
+-        dnsAndSock, gSocketTransportService,
++        mDnsFlags | nsIDNSService::RESOLVE_WANT_RECORD_ON_ERROR,
++        rozelynxInfo, dnsAndSock, gSocketTransportService,
+         dnsAndSock->mConnInfo->GetOriginAttributes(),
+         getter_AddRefs(mDNSRequest));
+   } while (NS_FAILED(rv) && ShouldRetryDNS());
+diff --git a/netwerk/protocol/http/HTTPSRecordResolver.cpp b/netwerk/protocol/http/HTTPSRecordResolver.cpp
+index c386832e56..9268f3f4e3 100644
+--- a/netwerk/protocol/http/HTTPSRecordResolver.cpp
++++ b/netwerk/protocol/http/HTTPSRecordResolver.cpp
+@@ -8,6 +8,7 @@
+ #include "HttpLog.h"
+ #include "mozilla/Components.h"
+ #include "mozilla/StaticPrefs_network.h"
++#include "mozilla/net/RozeLynxNetIface.h"  // RozeLynx netiface
+ #include "nsAHttpTransaction.h"
+ #include "nsHttpConnectionInfo.h"
+ #include "nsIDNSAdditionalInfo.h"
+@@ -16,6 +17,9 @@
+ #include "nsNetCID.h"
+ #include "nsServiceManagerUtils.h"
+ 
++#include "DNSAdditionalInfo.h"  // RozeLynx netiface
++#include "TRRService.h"         // RozeLynx netiface
++
+ namespace mozilla {
+ namespace net {
+ 
+@@ -73,8 +77,35 @@ nsresult HTTPSRecordResolver::FetchHTTPSRRInternal(
+     flags |= nsIDNSService::RESOLVE_BYPASS_CACHE;
+   }
+ 
++  // RozeLynx netiface: carry the connection's interface assignment (and any
++  // per-interface DoH override) on the HTTPS RR and CNAME probes so these
++  // connection-level lookups partition the DNS cache by interface exactly like
++  // the channel-bound lookups.  Without this the SVCB/CNAME probe and its
++  // address-record fallouts are created without an interface assignment and
++  // ride the shared DoH connection, contaminating bound tabs with default-route
++  // answers (the "unbound AAAA leak").
++  nsAutoCString rozelynxBindIface;
++  nsAutoCString rozelynxResolverURL;
++  if (!mConnInfo->GetBindIface().IsEmpty()) {
++    rozelynxBindIface = mConnInfo->GetBindIface();
++    RozeLynxNetIface::GetIfaceTrrURI(rozelynxBindIface, rozelynxResolverURL);
++    // No per-interface TRR URI pref — fall back to the global
++    // network.trr.uri so assigned lookups still resolve over DoH instead of
++    // failing closed with an empty trrServer on the record key.
++    if (rozelynxResolverURL.IsEmpty() && TRRService::Get()) {
++      TRRService::Get()->GetURI(rozelynxResolverURL);
++    }
++  }
++
+   nsCOMPtr<nsIDNSAdditionalInfo> info;
+-  if (mConnInfo->OriginPort() != NS_HTTPS_DEFAULT_PORT) {
++  if (!rozelynxBindIface.IsEmpty()) {
++    info = new DNSAdditionalInfo(
++        rozelynxResolverURL,
++        mConnInfo->OriginPort() != NS_HTTPS_DEFAULT_PORT
++            ? mConnInfo->OriginPort()
++            : -1,
++        rozelynxBindIface);
++  } else if (mConnInfo->OriginPort() != NS_HTTPS_DEFAULT_PORT) {
+     dns->NewAdditionalInfo(""_ns, mConnInfo->OriginPort(),
+                            getter_AddRefs(info));
+   }
+@@ -95,9 +126,13 @@ nsresult HTTPSRecordResolver::FetchHTTPSRRInternal(
+     return rv;
+   }
+ 
++  nsCOMPtr<nsIDNSAdditionalInfo> cnameInfo;
++  if (!rozelynxBindIface.IsEmpty()) {
++    cnameInfo = new DNSAdditionalInfo(rozelynxResolverURL, -1, rozelynxBindIface);
++  }
+   rv = dns->AsyncResolveNative(
+       mConnInfo->GetOrigin(), nsIDNSService::RESOLVE_TYPE_DEFAULT,
+-      flags | nsIDNSService::RESOLVE_CANONICAL_NAME, nullptr, this, aTarget,
++      flags | nsIDNSService::RESOLVE_CANONICAL_NAME, cnameInfo, this, aTarget,
+       mConnInfo->GetOriginAttributes(), getter_AddRefs(mCnameRequest));
+   return rv;
+ }
+@@ -220,11 +255,28 @@ void HTTPSRecordResolver::PrefetchAddrRecord(const nsACString& aTargetName,
+     flags |= nsIDNSService::RESOLVE_BYPASS_CACHE;
+   }
+ 
++  // RozeLynx netiface: bind the SVCB target prefetch the same way the origin
++  // connection is bound, so its address record powers a per-interface cache
++  // entry instead of feeding default-route answers into a bound tab.
++  nsAutoCString rozelynxBindIface;
++  nsAutoCString rozelynxResolverURL;
++  if (!connInfo->GetBindIface().IsEmpty()) {
++    rozelynxBindIface = connInfo->GetBindIface();
++    RozeLynxNetIface::GetIfaceTrrURI(rozelynxBindIface, rozelynxResolverURL);
++    if (rozelynxResolverURL.IsEmpty() && TRRService::Get()) {
++      TRRService::Get()->GetURI(rozelynxResolverURL);
++    }
++  }
++  nsCOMPtr<nsIDNSAdditionalInfo> info;
++  if (!rozelynxBindIface.IsEmpty()) {
++    info = new DNSAdditionalInfo(rozelynxResolverURL, -1, rozelynxBindIface);
++  }
++
+   nsCOMPtr<nsICancelable> tmpOutstanding;
+ 
+   (void)dns->AsyncResolveNative(
+       aTargetName, nsIDNSService::RESOLVE_TYPE_DEFAULT,
+-      flags | nsIDNSService::RESOLVE_SPECULATE, nullptr, this,
++      flags | nsIDNSService::RESOLVE_SPECULATE, info, this,
+       GetCurrentSerialEventTarget(), connInfo->GetOriginAttributes(),
+       getter_AddRefs(tmpOutstanding));
+ }
+diff --git a/netwerk/protocol/http/HappyEyeballsConnectionAttempt.cpp b/netwerk/protocol/http/HappyEyeballsConnectionAttempt.cpp
+index de88830297..5621298341 100644
+--- a/netwerk/protocol/http/HappyEyeballsConnectionAttempt.cpp
++++ b/netwerk/protocol/http/HappyEyeballsConnectionAttempt.cpp
+@@ -8,6 +8,7 @@
+ #include <algorithm>
+ 
+ #include "ConnectionEntry.h"
++#include "DNSAdditionalInfo.h"  // RozeLynx netiface
+ #include "HttpConnectionUDP.h"
+ #include "HttpLog.h"
+ #include "NSSErrorsService.h"
+@@ -15,7 +16,9 @@
+ #include "PendingTransactionInfo.h"
+ #include "mozilla/StaticPrefs_network.h"
+ #include "mozilla/net/NeckoChannelParams.h"
++#include "mozilla/net/RozeLynxNetIface.h"  // RozeLynx netiface
+ #include "nsDNSService2.h"
++#include "TRRService.h"  // RozeLynx netiface: global network.trr.uri fallback
+ #include "nsHttpConnectionMgr.h"
+ #include "nsHttpHandler.h"
+ #include "nsHttpTransaction.h"
+@@ -794,6 +797,26 @@ void HappyEyeballsConnectionAttempt::DNSLookup(
+   RefPtr<DnsRequestInfo> requestInfo = new DnsRequestInfo(aId, aType);
+   nsCOMPtr<nsICancelable> request;
+   nsresult rv = NS_ERROR_UNEXPECTED;
++  // RozeLynx netiface: carry the interface assignment (and any per-interface
++  // DoH override) on every lookup issued for this connection. The resolver
++  // partitions its cache by interface and forces TRR for assigned records.
++  nsAutoCString rozelynxBindIface;
++  nsAutoCString rozelynxResolverURL;
++  if (!mConnInfo->GetBindIface().IsEmpty()) {
++    rozelynxBindIface = mConnInfo->GetBindIface();
++    RozeLynxNetIface::GetIfaceTrrURI(rozelynxBindIface, rozelynxResolverURL);
++    // RozeLynx netiface: no per-interface TRR URI pref is set — fall back to
++    // the global network.trr.uri so assigned lookups still resolve over DoH
++    // instead of failing closed with an empty trrServer on the record key.
++    if (rozelynxResolverURL.IsEmpty() && TRRService::Get()) {
++      TRRService::Get()->GetURI(rozelynxResolverURL);
++      MOZ_LOG(gHttpLog, LogLevel::Info,
++              ("HappyEyeballs DNSLookup: %s RozeLynx netiface %s - fallback "
++               "TRR URI %s\n",
++               aHostname.BeginReading(), rozelynxBindIface.get(),
++               rozelynxResolverURL.get()));
++    }
++  }
+   if (dns) {
+     nsIDNSService::DNSFlags flags = aFlags.unwrap();
+     switch (aType) {
+@@ -812,7 +835,14 @@ void HappyEyeballsConnectionAttempt::DNSLookup(
+           rv = NS_ERROR_NOT_AVAILABLE;
+         } else {
+           nsCOMPtr<nsIDNSAdditionalInfo> info;
+-          if (mConnInfo->OriginPort() != NS_HTTPS_DEFAULT_PORT) {
++          if (!rozelynxBindIface.IsEmpty()) {
++            info = new DNSAdditionalInfo(
++                rozelynxResolverURL,
++                mConnInfo->OriginPort() != NS_HTTPS_DEFAULT_PORT
++                    ? mConnInfo->OriginPort()
++                    : -1,
++                rozelynxBindIface);
++          } else if (mConnInfo->OriginPort() != NS_HTTPS_DEFAULT_PORT) {
+             dns->NewAdditionalInfo(""_ns, mConnInfo->OriginPort(),
+                                    getter_AddRefs(info));
+           }
+@@ -824,20 +854,32 @@ void HappyEyeballsConnectionAttempt::DNSLookup(
+         }
+         break;
+       }
+-      case happy_eyeballs::DnsRecordType::Aaaa:
++      case happy_eyeballs::DnsRecordType::Aaaa: {
++        nsCOMPtr<nsIDNSAdditionalInfo> info;
++        if (!rozelynxBindIface.IsEmpty()) {
++          info = new DNSAdditionalInfo(rozelynxResolverURL, -1,
++                                       rozelynxBindIface);
++        }
+         rv = dns->AsyncResolveNative(
+             aHostname, nsIDNSService::RESOLVE_TYPE_DEFAULT,
+-            flags | nsIDNSService::RESOLVE_WANT_RECORD_ON_ERROR, nullptr, this,
++            flags | nsIDNSService::RESOLVE_WANT_RECORD_ON_ERROR, info, this,
+             gSocketTransportService, mConnInfo->GetOriginAttributes(),
+             getter_AddRefs(request));
+         break;
+-      case happy_eyeballs::DnsRecordType::A:
++      }
++      case happy_eyeballs::DnsRecordType::A: {
++        nsCOMPtr<nsIDNSAdditionalInfo> info;
++        if (!rozelynxBindIface.IsEmpty()) {
++          info = new DNSAdditionalInfo(rozelynxResolverURL, -1,
++                                       rozelynxBindIface);
++        }
+         rv = dns->AsyncResolveNative(
+             aHostname, nsIDNSService::RESOLVE_TYPE_DEFAULT,
+-            flags | nsIDNSService::RESOLVE_WANT_RECORD_ON_ERROR, nullptr, this,
++            flags | nsIDNSService::RESOLVE_WANT_RECORD_ON_ERROR, info, this,
+             gSocketTransportService, mConnInfo->GetOriginAttributes(),
+             getter_AddRefs(request));
+         break;
++      }
+     }
+   }
+ 
+diff --git a/netwerk/protocol/http/Http2StreamTunnel.cpp b/netwerk/protocol/http/Http2StreamTunnel.cpp
+index 5409988ef9..9f5fb69642 100644
+--- a/netwerk/protocol/http/Http2StreamTunnel.cpp
++++ b/netwerk/protocol/http/Http2StreamTunnel.cpp
+@@ -693,4 +693,16 @@ void Http2StreamWebSocket::CloseStream(nsresult aReason) {
+   Http2StreamTunnel::CloseStream(aReason);
+ }
+ 
++NS_IMETHODIMP
++Http2StreamTunnel::GetBindIface(nsACString& aBindIface) {
++  aBindIface = mBindIface;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++Http2StreamTunnel::SetBindIface(const nsACString& aBindIface) {
++  mBindIface = aBindIface;
++  return NS_OK;
++}
++
+ }  // namespace mozilla::net
+diff --git a/netwerk/protocol/http/Http2StreamTunnel.h b/netwerk/protocol/http/Http2StreamTunnel.h
+index 580f805430..53d37f68b0 100644
+--- a/netwerk/protocol/http/Http2StreamTunnel.h
++++ b/netwerk/protocol/http/Http2StreamTunnel.h
+@@ -66,12 +66,12 @@ class Http2StreamTunnel : public Http2StreamBase, public nsISocketTransport {
+ 
+   RefPtr<OutputStreamTunnel> mOutput;
+   RefPtr<InputStreamTunnel> mInput;
+-  RefPtr<nsHttpConnectionInfo> mConnectionInfo;
+-  bool mSendClosed{false};
+-  nsresult mCondition{NS_OK};
+-  // Stores the address of the transaction that created this Http2StreamTunnel.
+-  uintptr_t mId{0};
+-};
++   RefPtr<nsHttpConnectionInfo> mConnectionInfo;
++   bool mSendClosed{false};
++   nsresult mCondition{NS_OK};
++   uintptr_t mId{0};
++   nsCString mBindIface;
++ };
+ 
+ // f9d10060-f5d4-443e-ba59-f84ea975c5f0
+ #define NS_OUTPUTSTREAMTUNNEL_IID \
+diff --git a/netwerk/protocol/http/Http3ConnectUDPStream.cpp b/netwerk/protocol/http/Http3ConnectUDPStream.cpp
+index 6ee636c69c..305f3e77fd 100644
+--- a/netwerk/protocol/http/Http3ConnectUDPStream.cpp
++++ b/netwerk/protocol/http/Http3ConnectUDPStream.cpp
+@@ -261,6 +261,23 @@ NS_IMETHODIMP Http3ConnectUDPStream::LeaveMulticastAddr(
+   return NS_ERROR_NOT_IMPLEMENTED;
+ }
+ 
++// RozeLynx netiface: this stream is not backed by a real socket
++// (datagrams are tunneled through the CONNECT-UDP h3 session), so
++// SO_BINDTODEVICE does not apply; egress is governed by the
++// underlying h3 connection's socket. Store and return the
++// assignment for interface completeness.
++NS_IMETHODIMP Http3ConnectUDPStream::GetBindIface(nsACString& aBindIface) {
++  aBindIface = mBindIface;
++  return NS_OK;
++}
++
++// RozeLynx netiface
++NS_IMETHODIMP Http3ConnectUDPStream::SetBindIface(
++    const nsACString& aBindIface) {
++  mBindIface = aBindIface;
++  return NS_OK;
++}
++
+ int64_t Http3ConnectUDPStream::GetFileDescriptor() { return -1; }
+ 
+ void Http3ConnectUDPStream::EnableWritePoll() {}
+diff --git a/netwerk/protocol/http/Http3ConnectUDPStream.h b/netwerk/protocol/http/Http3ConnectUDPStream.h
+index 0b544a8a0f..78cd46fa33 100644
+--- a/netwerk/protocol/http/Http3ConnectUDPStream.h
++++ b/netwerk/protocol/http/Http3ConnectUDPStream.h
+@@ -97,6 +97,9 @@ class Http3ConnectUDPStream final : public Http3TunnelStreamBase,
+   uint64_t mTrackingId{1};
+ 
+   bool mIsTRRServiceChannel{false};
++  // RozeLynx netiface: stored for nsIUDPSocket completeness; this
++  // stream has no socket of its own (see Http3ConnectUDPStream.cpp).
++  nsCString mBindIface;
+ };
+ 
+ }  // namespace mozilla::net
+diff --git a/netwerk/protocol/http/Http3StreamTunnel.cpp b/netwerk/protocol/http/Http3StreamTunnel.cpp
+index 77b3a3fc10..03403a654d 100644
+--- a/netwerk/protocol/http/Http3StreamTunnel.cpp
++++ b/netwerk/protocol/http/Http3StreamTunnel.cpp
+@@ -792,4 +792,16 @@ void Http3StreamTunnel::CleanupStream(nsresult aReason) {
+   }
+ }
+ 
++NS_IMETHODIMP
++Http3TransportLayer::GetBindIface(nsACString& aBindIface) {
++  aBindIface = mBindIface;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++Http3TransportLayer::SetBindIface(const nsACString& aBindIface) {
++  mBindIface = aBindIface;
++  return NS_OK;
++}
++
+ }  // namespace mozilla::net
+diff --git a/netwerk/protocol/http/Http3StreamTunnel.h b/netwerk/protocol/http/Http3StreamTunnel.h
+index d6dd2b12ce..e1bd37a9cf 100644
+--- a/netwerk/protocol/http/Http3StreamTunnel.h
++++ b/netwerk/protocol/http/Http3StreamTunnel.h
+@@ -76,11 +76,12 @@ class Http3TransportLayer final : public nsISocketTransport,
+   };
+   virtual ~Http3TransportLayer();
+ 
+-  RefPtr<Http3StreamTunnel> mStream;
+-  InputStreamTunnel mInput;
+-  OutputStreamTunnel mOutput;
+-  nsresult mCondition{NS_OK};
+-};
++   RefPtr<Http3StreamTunnel> mStream;
++   InputStreamTunnel mInput;
++   OutputStreamTunnel mOutput;
++   nsresult mCondition{NS_OK};
++   nsCString mBindIface;
++ };
+ 
+ class Http3StreamTunnel final : public Http3Stream {
+  public:
+diff --git a/netwerk/protocol/http/HttpConnectionUDP.cpp b/netwerk/protocol/http/HttpConnectionUDP.cpp
+index 6c2b617cdc..a10035774f 100644
+--- a/netwerk/protocol/http/HttpConnectionUDP.cpp
++++ b/netwerk/protocol/http/HttpConnectionUDP.cpp
+@@ -285,6 +285,19 @@ nsresult HttpConnectionUDP::InitCommon(nsIUDPSocket* aSocket,
+     mSocket->MarkAsTRRServiceChannel();
+   }
+ 
++  // RozeLynx netiface: bind the QUIC socket to the assigned interface
++  // before the fd is created (nsUDPSocket applies SO_BINDTODEVICE
++  // inside InitWithAddress). Loopback/LAN peers are never device-bound:
++  // they route locally and would be unreachable through the assigned
++  // device.
++  if (mConnInfo && !mConnInfo->GetBindIface().IsEmpty() &&
++      !aPeerAddr.IsLoopbackAddr() && !aPeerAddr.IsIPAddrLocal()) {
++    mSocket->SetBindIface(mConnInfo->GetBindIface());
++    LOG(("HttpConnectionUDP::InitCommon RozeLynx netiface: UDP socket "
++         "binding to %s [this=%p]",
++         mConnInfo->GetBindIface().get(), this));
++  }
++
+   NetAddr local;
+   local.raw.family = aPeerAddr.raw.family;
+   nsresult rv = mSocket->InitWithAddress(&local, nullptr, false, 1);
+diff --git a/netwerk/protocol/http/TLSTransportLayer.cpp b/netwerk/protocol/http/TLSTransportLayer.cpp
+index 37ca570c25..008e602eec 100644
+--- a/netwerk/protocol/http/TLSTransportLayer.cpp
++++ b/netwerk/protocol/http/TLSTransportLayer.cpp
+@@ -872,4 +872,16 @@ bool TLSTransportLayer::HasDataToRecv() {
+   return n > 0;
+ }
+ 
++NS_IMETHODIMP
++TLSTransportLayer::GetBindIface(nsACString& aBindIface) {
++  aBindIface = mBindIface;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++TLSTransportLayer::SetBindIface(const nsACString& aBindIface) {
++  mBindIface = aBindIface;
++  return NS_OK;
++}
++
+ }  // namespace mozilla::net
+diff --git a/netwerk/protocol/http/TLSTransportLayer.h b/netwerk/protocol/http/TLSTransportLayer.h
+index ddf65d0b2e..e4bb944e08 100644
+--- a/netwerk/protocol/http/TLSTransportLayer.h
++++ b/netwerk/protocol/http/TLSTransportLayer.h
+@@ -160,6 +160,7 @@ class TLSTransportLayer final : public nsISocketTransport,
+   nsCOMPtr<nsIInputStreamCallback> mOwner;
+   nsresult mOutputStatus{NS_OK};
+   nsresult mInputStatus{NS_OK};
++  nsCString mBindIface;
+ };
+ 
+ }  // namespace mozilla::net
+ 
+diff --git a/netwerk/protocol/http/TRRServiceChannel.cpp b/netwerk/protocol/http/TRRServiceChannel.cpp
+index a9e2ce0a97..02ace9aaf2 100644
+--- a/netwerk/protocol/http/TRRServiceChannel.cpp
++++ b/netwerk/protocol/http/TRRServiceChannel.cpp
+@@ -408,7 +408,10 @@ nsresult TRRServiceChannel::BeginConnect() {
+   // TODO: Bug 1622778 for using AltService in socket process.
+   StoreAllowAltSvc(XRE_IsParentProcess() && LoadAllowAltSvc());
+   bool http2Allowed = !gHttpHandler->IsHttp2Excluded(connInfo);
+-  bool http3Allowed = Http3Allowed();
++  // RozeLynx netiface: honor the h3 opt-out stamped on the channel-supplied
++  // connection info by TRR::SendHTTPRequest for iface-bound records (v12).
++  bool http3Allowed =
++      Http3Allowed() && !(mConnectionInfo && mConnectionInfo->GetHttp3Disabled());
+   if (!http3Allowed) {
+     mCaps |= NS_HTTP_DISALLOW_HTTP3;
+   }
+@@ -443,8 +446,33 @@ nsresult TRRServiceChannel::BeginConnect() {
+ 
+     LOG(("TRRServiceChannel %p Using connection info from altsvc mapping",
+          this));
++    // RozeLynx netiface: preserve the netiface stamp from the channel's
++    // existing connection info (set by TRR::SendHTTPRequest for per-tab
++    // interface binding) when fetching the pooled connection info from
++    // the AltSvc mapping. The fresh connection info from
++    // AltSvcMapping::GetConnectionInfo carries none of these; without the
++    // restore the DoH connection loses its interface assignment, its h3
++    // opt-out (v1), its TRR mode and its TRR-service-channel identity.
++    nsAutoCString savedBindIface;
++    Http3Policy savedHttp3Policy = Http3Policy::Allowed;
++    nsIRequest::TRRMode savedTRRMode = nsIRequest::TRR_DEFAULT_MODE;
++    bool savedIsTrrServiceChannel = false;
++    if (mConnectionInfo) {
++      savedBindIface = mConnectionInfo->GetBindIface();
++      savedHttp3Policy = mConnectionInfo->GetHttp3Policy();
++      savedTRRMode = mConnectionInfo->GetTRRMode();
++      savedIsTrrServiceChannel = mConnectionInfo->GetIsTrrServiceChannel();
++    }
+     mapping->GetConnectionInfo(getter_AddRefs(mConnectionInfo), proxyInfo,
+                                OriginAttributes());
++    if (mConnectionInfo) {
++      if (!savedBindIface.IsEmpty()) {
++        mConnectionInfo->SetBindIface(savedBindIface);
++      }
++      mConnectionInfo->SetHttp3Policy(savedHttp3Policy);
++      mConnectionInfo->SetTRRMode(savedTRRMode);
++      mConnectionInfo->SetIsTrrServiceChannel(savedIsTrrServiceChannel);
++    }
+     glean::http::transaction_use_altsvc
+         .EnumGet(glean::http::TransactionUseAltsvcLabel::eTrue)
+         .Add();
+@@ -601,7 +629,10 @@ nsresult TRRServiceChannel::SetupTransaction() {
+   bool useNonDirectProxy = mConnectionInfo->ProxyInfo()
+                                ? !mConnectionInfo->ProxyInfo()->IsDirect()
+                                : false;
+-  if (!Http3Allowed() || useNonDirectProxy) {
++  // RozeLynx netiface: mirror the conn-info h3 opt-out into the transaction
++  // caps so every dispatch and happy-eyeballs h3 gate excludes bound TRR (v12).
++  if (!Http3Allowed() || useNonDirectProxy ||
++      mConnectionInfo->GetHttp3Disabled()) {
+     mCaps |= NS_HTTP_DISALLOW_HTTP3;
+   }
+   if (LoadBeConservative()) {
+diff --git a/netwerk/protocol/http/nsHttpChannel.cpp b/netwerk/protocol/http/nsHttpChannel.cpp
+index 0941cf9dc3..439458347f 100644
+--- a/netwerk/protocol/http/nsHttpChannel.cpp
++++ b/netwerk/protocol/http/nsHttpChannel.cpp
+@@ -91,6 +91,7 @@
+ #include "nsHttpConnectionMgr.h"
+ #include "nsHttpHandler.h"
+ #include "nsHttpTransaction.h"
++#include "mozilla/net/RozeLynxNetIface.h"  // RozeLynx netiface
+ #include "nsICacheEntry.h"
+ #include "nsICacheStorage.h"
+ #include "nsICacheStorageService.h"
+@@ -7799,10 +7800,19 @@ nsHttpChannel::AsyncOpen(nsIStreamListener* aListener) {
+ nsHttpChannel::AsyncOpen(nsIStreamListener* aListener) {
+   // doContentSecurityCheck and OnOpeningRequest fire observers that may
+   // spin nested event loops; hold a strong ref to this.
+   RefPtr<nsHttpChannel> self(this);
+ 
++  // RozeLynx netiface v13: refresh the host->interface activity index at
++  // AsyncOpen entry, before any observer can run browser.dns.resolve()
++  // for this channel's host.  BeginConnect normally records first, but
++  // URL-classifier-canceled channels fire onBeforeRequest observers
++  // without ever reaching BeginConnect; extensions resolving this host
++  // inside such an observer must see this channel's binding.
++  nsCString rozelynxAsyncOpenIface;
++  RozeLynxNetIface::ResolveForChannel(this, rozelynxAsyncOpenIface);
++
+   AUTO_PROFILER_FLOW_MARKER("nsHttpChannel::AsyncOpen", NETWORK,
+                             Flow::FromPointer(this));
+   nsCOMPtr<nsIStreamListener> listener = aListener;
+   nsresult rv =
+       nsContentSecurityManager::doContentSecurityCheck(this, listener);
+@@ -8198,6 +8208,57 @@ nsresult nsHttpChannel::BeginConnect() {
+   }
+ #endif
+ 
++  // RozeLynx netiface: resolve the layered interface assignment (tab >
++  // container > profile) and stamp it on the connection info.  Bound
++  // channels partition connection pools per interface, opt out of HTTP/3
++  // (neqo UDP sockets are not bindable in v1) and force TRR/DoH so DNS
++  // never leaks to the default route.
++  nsCString rozelynxBindIface;
++  if (RozeLynxNetIface::ResolveForChannel(this, rozelynxBindIface) &&
++      !rozelynxBindIface.IsEmpty()) {
++    connInfo->SetBindIface(rozelynxBindIface);
++    LOG(("nsHttpChannel %p RozeLynx netiface: binding to %s\n", this,
++         rozelynxBindIface.get()));
++    // v1: exclude HTTP/3 — QUIC UDP sockets cannot be bound yet.
++    StoreAllowHttp3(false);
++    mCaps |= NS_HTTP_DISALLOW_HTTP3;
++    connInfo->SetHttp3Policy(Http3Policy::Disabled);
++    // Assigned loads must not fall back to native DNS resolution -- but only
++    // when there is a resolver to send them to.  Forcing TRR_ONLY with an empty
++    // trrServer fails every lookup CLOSED, because TRR_ONLY has no native
++    // fallback: the record never appears at all.
++    //
++    // This is not hypothetical, and it is what broke WebSockets.  A profile
++    // that binds an interface while leaving both rozelynx.netiface.trr.uri.<ifname>
++    // and network.trr.uri unset gets an empty URI from the fallback, so every
++    // hostname needing a FRESH resolution became unresolvable, while hosts
++    // already in the cache kept working because they needed no lookup.  That
++    // is why the symptom looked so specific: a page whose host was resolved
++    // loaded fine, and a WebSocket to a new host (gateway.facebook.com) was
++    // reported as "the connection was interrupted while the page was loading",
++    // with no other visible failure.  SO_BINDTODEVICE was not involved: on a
++    // machine where the bound interface is also the default route it is a
++    // no-op, which is exactly the configuration that made this so hard to see.
++    //
++    // With no resolver configured there is no per-interface DoH to preserve, so
++    // leaving the channel at its stock TRR mode costs no isolation.  The bind
++    // above is untouched and still constrains egress; only the DNS mode is left
++    // alone, and only in the case where forcing it would guarantee failure.
++    nsAutoCString rozelynxResolverURL;
++    RozeLynxNetIface::GetEffectiveTrrURI(rozelynxBindIface, rozelynxResolverURL);
++    if (!rozelynxResolverURL.IsEmpty()) {
++      // Set the channel mode so the caps/conn-info finalization below stays
++      // consistent with the forced mode.
++      (void)SetTRRMode(nsIRequest::TRR_ONLY_MODE);
++      mCaps |= NS_HTTP_TRR_FLAGS_FROM_MODE(nsIRequest::TRR_ONLY_MODE);
++      connInfo->SetTRRMode(nsIRequest::TRR_ONLY_MODE);
++    } else {
++      LOG(("nsHttpChannel %p RozeLynx netiface: bound to %s but no DoH "
++           "resolver is configured - keeping the stock DNS mode\n",
++           this, rozelynxBindIface.get()));
++    }
++  }
++
+   bool http2Allowed = !gHttpHandler->IsHttp2Excluded(connInfo);
+ 
+   bool http3Allowed = Http3Allowed();
+@@ -8258,6 +8290,13 @@ nsresult nsHttpChannel::BeginConnect() {
+     LOG(("nsHttpChannel %p Using connection info from altsvc mapping", this));
+     mapping->GetConnectionInfo(getter_AddRefs(mConnectionInfo), proxyInfo,
+                                originAttributes);
++    // RozeLynx netiface: the mapping-derived connection info drops the
++    // interface stamp and the v1 h3 opt-out; re-apply both, mirroring
++    // the TRRServiceChannel altsvc hunk.
++    if (!rozelynxBindIface.IsEmpty() && mConnectionInfo) {
++      mConnectionInfo->SetBindIface(rozelynxBindIface);
++      mConnectionInfo->SetHttp3Policy(Http3Policy::Disabled);
++    }
+     glean::http::transaction_use_altsvc
+         .EnumGet(glean::http::TransactionUseAltsvcLabel::eTrue)
+         .Add();
+diff --git a/netwerk/protocol/http/nsHttpConnectionInfo.cpp b/netwerk/protocol/http/nsHttpConnectionInfo.cpp
+index b2874a07c6..f5ebf20f0b 100644
+--- a/netwerk/protocol/http/nsHttpConnectionInfo.cpp
++++ b/netwerk/protocol/http/nsHttpConnectionInfo.cpp
+@@ -269,6 +269,14 @@ void nsHttpConnectionInfo::BuildHashKey() {
+     mHashKey.AppendLiteral("[!h3]");
+   }
+ 
++  // RozeLynx netiface: connections bound to different interfaces must never
++  // share a pool entry.
++  if (!mBindIface.IsEmpty()) {
++    mHashKey.AppendLiteral("[IF ");
++    mHashKey.Append(mBindIface);
++    mHashKey.Append(']');
++  }
++
+   if (mProxyInfo) {
+     const nsCString& connectionIsolationKey =
+         mProxyInfo->ConnectionIsolationKey();
+@@ -363,6 +371,7 @@ already_AddRefed<nsHttpConnectionInfo> nsHttpConnectionInfo::Clone() const {
+   clone->SetEchConfig(GetEchConfig());
+   clone->SetWebTransportId(GetWebTransportId());
+   clone->SetHappyEyeballsEnabled(GetHappyEyeballsEnabled());
++  clone->SetBindIface(mBindIface);
+ 
+   MOZ_ASSERT(clone->Equals(this));
+ 
+@@ -429,6 +438,7 @@ nsHttpConnectionInfo::CloneAndAdoptHTTPSSVCRecord(
+   nsAutoCString echConfig;
+   (void)aRecord->GetEchConfig(echConfig);
+   clone->SetEchConfig(echConfig);
++  clone->SetBindIface(mBindIface);
+ 
+   return clone.forget();
+ }
+@@ -476,6 +486,7 @@ nsHttpConnectionInfo::CloneAndAdoptPortAndAlpn(
+   // entry as the origin connection info — WebTransport server cert hashes are
+   // stored under that entry and looked up by Http3Session::Init.
+   clone->SetWebTransportId(GetWebTransportId());
++  clone->SetBindIface(mBindIface);
+ 
+   // IPHints and echConfig are handled in HappyEyeballsConnectionAttempt.
+   return clone.forget();
+@@ -511,6 +522,7 @@ void nsHttpConnectionInfo::SerializeHttpConnectionInfo(
+   aArgs.webTransport() = aInfo->GetWebTransport();
+   aArgs.webTransportId() = aInfo->GetWebTransportId();
+   aArgs.happyEyeballsEnabled() = aInfo->GetHappyEyeballsEnabled();
++  aArgs.bindIface() = aInfo->GetBindIface();
+ 
+   if (!aInfo->ProxyInfo()) {
+     return;
+@@ -563,6 +575,9 @@ nsHttpConnectionInfo::DeserializeHttpConnectionInfoCloneArgs(
+   cinfo->SetHttp3Only(aInfoArgs.http3Only());
+   cinfo->SetEchConfig(aInfoArgs.echConfig());
+   cinfo->SetHappyEyeballsEnabled(aInfoArgs.happyEyeballsEnabled());
++  if (!aInfoArgs.bindIface().IsEmpty()) {
++    cinfo->SetBindIface(aInfoArgs.bindIface());
++  }
+ 
+   return cinfo.forget();
+ }
+@@ -594,6 +609,7 @@ void nsHttpConnectionInfo::CloneAsDirectRoute(nsHttpConnectionInfo** outCI,
+   clone->SetHttp3Only(GetHttp3Only());
+   clone->SetEchConfig(GetEchConfig());
+   clone->SetHappyEyeballsEnabled(GetHappyEyeballsEnabled());
++  clone->SetBindIface(mBindIface);
+ 
+   clone.forget(outCI);
+ }
+@@ -627,6 +643,7 @@ nsresult nsHttpConnectionInfo::CreateWildCard(nsHttpConnectionInfo** outParam) {
+   clone->SetAnonymous(GetAnonymous());
+   clone->SetPrivate(GetPrivate());
+   clone->SetFallbackConnection(GetFallbackConnection());
++  clone->SetBindIface(mBindIface);
+   clone.forget(outParam);
+   return NS_OK;
+ }
+@@ -659,6 +676,13 @@ void nsHttpConnectionInfo::SetHttp3Policy(Http3Policy aPolicy) {
+   }
+ }
+ 
++void nsHttpConnectionInfo::SetBindIface(const nsACString& aIface) {
++  if (mBindIface != aIface) {
++    mBindIface = aIface;
++    RebuildHashKey();
++  }
++}
++
+ void nsHttpConnectionInfo::SetWebTransport(bool aWebTransport) {
+   if (mWebTransport != aWebTransport) {
+     mWebTransport = aWebTransport;
+@@ -709,6 +733,11 @@ CoalescingKey nsHttpConnectionInfo::BuildOriginFrameHashKey(
+   ci->GetOriginAttributes().CreateSuffix(suffix);
+   newKey.Append(suffix);
+   newKey.AppendLiteral("]viaORIGIN.FRAME");
++  if (!ci->GetBindIface().IsEmpty()) {
++    newKey.AppendLiteral("[bind:");
++    newKey.Append(ci->GetBindIface());
++    newKey.AppendLiteral("]");
++  }
+   return CoalescingKey{HashString(newKey), std::move(newKey)};
+ }
+ 
+diff --git a/netwerk/protocol/http/nsHttpConnectionInfo.h b/netwerk/protocol/http/nsHttpConnectionInfo.h
+index 3e9c1313d3..dcc1f399a9 100644
+--- a/netwerk/protocol/http/nsHttpConnectionInfo.h
++++ b/netwerk/protocol/http/nsHttpConnectionInfo.h
+@@ -269,6 +269,12 @@ class nsHttpConnectionInfo final : public ARefBase {
+   void SetWebTransport(bool aWebTransport);
+   bool GetWebTransport() const { return mWebTransport; }
+ 
++  // RozeLynx netiface: bind this connection's socket to a network interface
++  // (SO_BINDTODEVICE). Empty = normal routing. Part of the hash key, so
++  // connection pools and coalescing partition per interface.
++  void SetBindIface(const nsACString& aIface);
++  const nsCString& GetBindIface() const { return mBindIface; }
++
+   void SetWebTransportId(uint64_t id);
+   uint32_t GetWebTransportId() const { return mWebTransportId; };
+ 
+@@ -383,6 +389,8 @@ class nsHttpConnectionInfo final : public ARefBase {
+ 
+   bool mHappyEyeballsEnabled = false;
+ 
++  nsCString mBindIface;  // RozeLynx netiface ("" = no binding)
++
+   // for RefPtr
+   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(nsHttpConnectionInfo, override)
+ };
+diff --git a/netwerk/protocol/http/nsHttpConnection.cpp b/netwerk/protocol/http/nsHttpConnection.cpp
+--- a/netwerk/protocol/http/nsHttpConnection.cpp
++++ b/netwerk/protocol/http/nsHttpConnection.cpp
+@@ -1198,9 +1198,31 @@ void nsHttpConnection::OnProxyConnectComplete(
+     }
+     nsresult rv;
+     if (isHttps) {
+       bool skipSSL = false;
+-      if (mConnInfo->UsingHttpsProxy() ||
+-          mTransactionCaps & NS_HTTP_TLS_TUNNEL) {
++      // RozeLynx netiface: do NOT take the secondary-TLS (DirectTLS) path for
++      // a bound connection.
++      //
++      // SetupSecondaryTLS() installs a TLSTransportLayer, which creates its own
++      // socket through the "ssl" socket provider. That socket is a raw
++      // PR_OpenTCPSocket inside NSS and never becomes an nsSocketTransport, so
++      // nsSocketTransport::InitiateSocket - the only place this patch applies
++      // SO_BINDTODEVICE - is never reached. A bound connection taking this path
++      // resolves its DNS over the bound DoH channel and then egresses on the
++      // ambient default route: the exact leak the feature exists to prevent,
++      // reached silently, with every log line still naming the interface.
++      //
++      // Skipping it is not a degradation. Falling through to the branch below
++      // runs mTlsHandshaker->InitSSLParams(), which negotiates TLS in place on
++      // the socket that was already established - and that socket went through
++      // nsSocketTransport, so it IS bound. The only thing given up is the
++      // DirectTLS optimisation, and only for interface-bound connections.
++      //
++      // Scoped to this path deliberately: SetupSecondaryTLS is reached only from
++      // proxy CONNECT / TLS-tunnel, so a direct connection was never exposed
++      // and must not change behaviour here.
++      if (mConnInfo->GetBindIface().IsEmpty() &&
++          (mConnInfo->UsingHttpsProxy() ||
++           (mTransactionCaps & NS_HTTP_TLS_TUNNEL))) {
+         LOG(("%p SetupSecondaryTLS %s %d\n", this, mConnInfo->Origin(),
+              mConnInfo->OriginPort()));
+         SetupSecondaryTLS();
+diff --git a/netwerk/protocol/http/nsHttpConnectionMgr.cpp b/netwerk/protocol/http/nsHttpConnectionMgr.cpp
+index 11d7cf7e8a..34dbb3ee0b 100644
+--- a/netwerk/protocol/http/nsHttpConnectionMgr.cpp
++++ b/netwerk/protocol/http/nsHttpConnectionMgr.cpp
+@@ -808,6 +808,21 @@ HttpConnectionBase* nsHttpConnectionMgr::FindCoalescableConnectionByHashKey(
+       continue;
+     }
+ 
++    // RozeLynx netiface: a coalescing join must never cross interface
++    // assignments - the pooled connection's socket egresses its own iface.
++    // Gate both the justKidding availability probe and the real join so
++    // an "available" answer can never be based on a join the real path
++    // would refuse (pending-Q wedge risk, cf. bug 2050384).
++    if (ci->GetBindIface() !=
++        potentialMatch->ConnectionInfo()->GetBindIface()) {
++      LOG(("FindCoalescableConnectionByHashKey() RozeLynx netiface: "
++           "refusing cross-iface join newCI=%s matchedCI=%s\n",
++           ci->HashKey().get(),
++           potentialMatch->ConnectionInfo()->HashKey().get()));
++      j++;
++      continue;
++    }
++
+     bool couldJoin;
+     if (justKidding) {
+       couldJoin =
+diff --git a/netwerk/protocol/http/nsHttpHandler.cpp b/netwerk/protocol/http/nsHttpHandler.cpp
+index 0192e5f6f2..8f2ec15213 100644
+--- a/netwerk/protocol/http/nsHttpHandler.cpp
++++ b/netwerk/protocol/http/nsHttpHandler.cpp
+@@ -38,6 +38,7 @@
+ #include "mozilla/SyncRunnable.h"
+ #include "mozilla/dom/ContentParent.h"
+ #include "mozilla/dom/Navigator.h"
++#include "mozilla/net/RozeLynxNetIface.h"  // RozeLynx netiface
+ #include "mozilla/dom/Promise.h"
+ #include "mozilla/dom/network/Connection.h"
+ #include "mozilla/glean/GleanPings.h"
+@@ -2564,6 +2565,16 @@ nsresult nsHttpHandler::SpeculativeConnectInternal(
+     ci->SetPrivate(true);
+   }
+ 
++  // RozeLynx netiface: speculative connections honor container/profile
++  // assignments (no tab layer available without a BrowsingContext).
++  nsCString rozelynxBindIface;
++  if (RozeLynxNetIface::ResolveForOriginAttributes(originAttributes,
++                                                   rozelynxBindIface) &&
++      !rozelynxBindIface.IsEmpty()) {
++    ci->SetBindIface(rozelynxBindIface);
++    ci->SetHttp3Policy(Http3Policy::Disabled);  // v1: QUIC UDP sockets are not bindable
++  }
++
+   if (mDebugObservations) {
+     // this is basically used for test coverage of an otherwise 'hintable'
+     // feature
+
+
+
+diff --git a/netwerk/protocol/websocket/WebSocketChannel.cpp b/netwerk/protocol/websocket/WebSocketChannel.cpp
+--- a/netwerk/protocol/websocket/WebSocketChannel.cpp
++++ b/netwerk/protocol/websocket/WebSocketChannel.cpp
+@@ -23,5 +23,6 @@
+ #include "mozilla/glean/NetwerkProtocolWebsocketMetrics.h"
+ #include "mozilla/net/WebSocketEventService.h"
++#include "mozilla/net/RozeLynxNetIface.h"  // RozeLynx netiface (admission DNS)
+ #include "nsCRT.h"
+ #include "nsCharSeparatedTokenizer.h"
+ #include "nsComponentManagerUtils.h"
+@@ -33,5 +34,7 @@
+ #include "nsIClassOfService.h"
+ #include "nsICryptoHash.h"
++#include "DNSAdditionalInfo.h"  // RozeLynx netiface (admission DNS)
++#include "TRRService.h"  // RozeLynx netiface: network.trr.uri fallback
+ #include "nsIDNSRecord.h"
+ #include "nsIDNSService.h"
+ #include "nsIDashboardEventNotifier.h"
+@@ -2922,9 +2925,42 @@
+   nsCOMPtr<nsIEventTarget> main = GetMainThreadSerialEventTarget();
+   nsCOMPtr<nsICancelable> cancelable;
++  // RozeLynx netiface: the admission lookup runs BEFORE the internal HTTP
++  // handshake channel is opened (BeginOpenInternal -> AsyncOpen), so the
++  // interface assignment cannot be read off a connection info the way the
++  // handshake's own lookup can.  Without this, the admission query rode the
++  // ambient DNS path unbound - leaking the bound tab's hostname (and
++  // resolver choice) while the handshake below it egressed the assigned
++  // interface, and consulting the wrong cache partition.
++  //
++  // Resolve the layered assignment (tab > url rule > container > profile)
++  // from the websocket's own URI + load info, then attach it with the
++  // per-interface DoH override falling back to the global network.trr.uri -
++  // exactly the DnsAndConnectSocket / HappyEyeballs resolve pattern.  The
++  // lookup's result is only used as the admission key (never to connect)
++  // and OnLookupComplete treats failure as non-fatal, so the assignment
++  // cannot break the websocket itself.
++  nsCOMPtr<nsIDNSAdditionalInfo> rozelynxInfo;
++  {
++    nsAutoCString rozelynxBindIface;
++    if (RozeLynxNetIface::ResolveForWebSocket(mURI, mLoadInfo,
++                                              rozelynxBindIface) &&
++        !rozelynxBindIface.IsEmpty()) {
++      nsAutoCString rozelynxResolverURL;
++      RozeLynxNetIface::GetIfaceTrrURI(rozelynxBindIface, rozelynxResolverURL);
++      if (rozelynxResolverURL.IsEmpty() && TRRService::Get()) {
++        TRRService::Get()->GetURI(rozelynxResolverURL);
++      }
++      rozelynxInfo = new DNSAdditionalInfo(rozelynxResolverURL, -1,
++                                           rozelynxBindIface);
++      LOG(("WebSocketChannel::DoAdmissionDNS RozeLynx netiface %s\n",
++           rozelynxBindIface.get()));
++    }
++  }
+   rv = dns->AsyncResolveNative(hostName, nsIDNSService::RESOLVE_TYPE_DEFAULT,
+-                               nsIDNSService::RESOLVE_DEFAULT_FLAGS, nullptr,
+-                               this, main, mLoadInfo->GetOriginAttributes(),
+-                               getter_AddRefs(cancelable));
++                               nsIDNSService::RESOLVE_DEFAULT_FLAGS,
++                               rozelynxInfo, this, main,
++                               mLoadInfo->GetOriginAttributes(),
++                               getter_AddRefs(cancelable));
+   if (NS_FAILED(rv)) {
+     return rv;
+   }
+diff --git a/netwerk/protocol/websocket/moz.build b/netwerk/protocol/websocket/moz.build
+--- a/netwerk/protocol/websocket/moz.build
++++ b/netwerk/protocol/websocket/moz.build
+@@ -62,4 +62,5 @@
+ LOCAL_INCLUDES += [
+     "/dom/base",
+     "/netwerk/base",
++    "/netwerk/dns",
+ ]

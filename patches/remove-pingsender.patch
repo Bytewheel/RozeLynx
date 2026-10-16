@@ -29,10 +29,7 @@ diff --git a/browser/installer/windows/nsis/shared.nsh b/browser/installer/windo
 index 8e5e75d..1fbc59f 100644
 --- a/browser/installer/windows/nsis/shared.nsh
 +++ b/browser/installer/windows/nsis/shared.nsh
-@@ -1765,7 +1765,6 @@ FunctionEnd
-   Push "crashreporter.exe"
-   Push "default-browser-agent.exe"
-   Push "nmhproxy.exe"
+@@ -1415,4 +1415,3 @@
 -  Push "pingsender.exe"
    Push "updater.exe"
    Push "mozwer.dll"

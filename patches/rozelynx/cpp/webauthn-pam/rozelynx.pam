@@ -1,0 +1,12 @@
+#%PAM-1.0
+# /etc/pam.d/rozelynx - the PAM stack RozeLynx consults for passkey user
+# verification (face recognition via howdy, the account password as
+# fallback). RozeLynx resolves this name first; without it the browser
+# falls back to the system-auth / common-auth chains, so this file is
+# only needed to give the browser a stack of its own.
+#
+# Face recognition first (when howdy is installed and has a model for
+# the account), then the usual system chain for the password fallback:
+#auth     sufficient   pam_howdy.so
+auth     include      system-auth
+account  include      system-auth
