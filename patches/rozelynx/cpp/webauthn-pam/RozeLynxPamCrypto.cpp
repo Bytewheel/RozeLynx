@@ -81,7 +81,7 @@ bool RozeLynxPamCrypto::GenerateEs256KeyPair(nsTArray<uint8_t>& aPkcs8,
   // DER-encoded named-curve parameter block for CKM_EC_KEY_PAIR_GEN: the
   // SEC OID of secp256r1 (06 || len || content).
   unsigned char oid[16] = {0};
-  oid[0] = SEC_ASN1_OBJECT_IDENTIFIER;
+  oid[0] = SEC_ASN1_OBJECT_ID;
   {
     const SECOidData* oidData = SECOID_FindOIDByTag(SEC_OID_SECG_EC_SECP256R1);
     if (!oidData || oidData->oid.len == 0 ||
@@ -91,7 +91,7 @@ bool RozeLynxPamCrypto::GenerateEs256KeyPair(nsTArray<uint8_t>& aPkcs8,
     oid[1] = static_cast<unsigned char>(oidData->oid.len);
     memcpy(oid + 2, oidData->oid.data, oidData->oid.len);
   }
-  SECItem ecParams = {siBuffer, oid, 2 + oid[1]};
+  SECItem ecParams = {siBuffer, oid, static_cast<unsigned int>(2 + oid[1])};
 
   SECKEYPublicKey* pub = nullptr;
   // Session key (permanent=false, sensitive=true): never lands in an NSS

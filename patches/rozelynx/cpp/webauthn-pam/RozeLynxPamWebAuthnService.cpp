@@ -16,6 +16,7 @@
 #include "RozeLynxPamCrypto.h"
 #include "mozilla/JSONWriter.h"
 #include "mozilla/Services.h"
+#include "mozilla/Span.h"
 #include "mozilla/StaticPrefs_security.h"
 #include "nsCOMPtr.h"
 #include "nsIWebAuthnArgs.h"
@@ -44,26 +45,26 @@ void SendWebAuthnPrompt(const char* aType, uint64_t aTransactionId,
   JSONWriter w(f, JSONWriter::CollectionStyle::SingleLineStyle);
   w.Start();
   w.StartObjectProperty("prompt");
-  w.StringProperty("type", aType);
+  w.StringProperty("type", MakeStringSpan(aType));
   if (aEntityNames) {
     w.StartArrayProperty("entities");
     for (const nsString& name : *aEntityNames) {
-      nsAutoCString nameUtf8(NS_ConvertUTF16toUTF8(name));
+      NS_ConvertUTF16toUTF8 nameUtf8(name);
       w.StartObjectElement();
-      w.StringProperty("name", nameUtf8.get());
+      w.StringProperty("name", MakeStringSpan(nameUtf8.get()));
       w.EndObject();
     }
     w.EndArray();
   }
   w.EndObject();
-  nsAutoCString originUtf8(NS_ConvertUTF16toUTF8(aOrigin));
-  w.StringProperty("origin", originUtf8.get());
+  NS_ConvertUTF16toUTF8 originUtf8(aOrigin);
+  w.StringProperty("origin", MakeStringSpan(originUtf8.get()));
   w.IntProperty("tid", static_cast<int64_t>(aTransactionId));
   w.IntProperty("browsingContextId",
                 static_cast<int64_t>(aBrowsingContextId));
   w.End();
 
-  nsString wide(NS_ConvertUTF8toUTF16(json));
+  NS_ConvertUTF8toUTF16 wide(json);
   nsCOMPtr<nsIObserverService> os = services::GetObserverService();
   if (os) {
     MOZ_ALWAYS_SUCCEEDS(
@@ -187,7 +188,7 @@ void RozeLynxPamWebAuthnService::ContinueRegister(bool aVerified) {
     return;
   }
 
-  nsAutoCString rpIdUtf8(NS_ConvertUTF16toUTF8(rpId));
+  NS_ConvertUTF16toUTF8 rpIdUtf8(rpId);
   uint8_t rpIdHash[32];
   if (!RozeLynxPamCrypto::Sha256(
           reinterpret_cast<const uint8_t*>(rpIdUtf8.get()), rpIdUtf8.Length(),
@@ -209,12 +210,12 @@ void RozeLynxPamWebAuthnService::ContinueRegister(bool aVerified) {
       MOZ_WEBAUTHN_RESIDENT_KEY_REQUIREMENT_DISCOURAGED);
 
   RozeLynxPasskeyRecord record;
-  record.mCredentialId = credentialIdArray;
+  record.mCredentialId = credentialIdArray.Clone();
   record.mRpId = rpIdUtf8;
   record.mUserName = userName;
   record.mUserDisplayName = displayName;
-  record.mUserHandle = userHandle;
-  record.mPkcs8 = pkcs8;
+  record.mUserHandle = userHandle.Clone();
+  record.mPkcs8 = pkcs8.Clone();
   record.mSignCount = 0;
   record.mResident = resident;
   record.mCreated = PR_Now() / PR_USEC_PER_SEC;

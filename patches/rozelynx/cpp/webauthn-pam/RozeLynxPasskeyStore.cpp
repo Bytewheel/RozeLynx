@@ -28,11 +28,12 @@ bool B64Encode(const nsTArray<uint8_t>& aBytes, nsCString& aOut) {
 
 bool B64Decode(const nsACString& aB64, nsTArray<uint8_t>& aOut) {
   aOut.Clear();
+  FallibleTArray<uint8_t> bytes;
   if (NS_FAILED(Base64URLDecode(aB64, Base64URLDecodePaddingPolicy::Ignore,
-                                aOut))) {
-    aOut.Clear();
+                                bytes))) {
     return false;
   }
+  aOut.AppendElements(bytes.Elements(), bytes.Length());
   return true;
 }
 
@@ -43,10 +44,18 @@ nsAutoCString PrefFor(const nsACString& aCredIdB64, const char* aField) {
   return pref;
 }
 
+// Preferences getters take the pref name as a raw NUL-terminated string;
+// this helper keeps the call sites readable.
+nsAutoCString GetStringPref(const nsAutoCString& aPref) {
+  nsAutoCString value;
+  Preferences::GetCString(aPref.get(), value);
+  return value;
+}
+
 bool IsStoredKey(const nsACString& aCredIdB64) {
   nsAutoCString keyPref(PrefFor(aCredIdB64, ".key"));
-  return Preferences::GetType(keyPref) == nsIPrefBranch::PREF_STRING &&
-         !Preferences::GetCString(keyPref).IsEmpty();
+  return Preferences::GetType(keyPref.get()) == nsIPrefBranch::PREF_STRING &&
+         !GetStringPref(keyPref).IsEmpty();
 }
 
 }  // namespace
@@ -56,15 +65,17 @@ void RozeLynxPasskeyStore::GetAll(nsTArray<RozeLynxPasskeyRecord>& aOut) {
 
   nsCOMPtr<nsIPrefBranch> root = Preferences::GetRootBranch();
   nsTArray<nsCString> children;
-  if (!root || NS_FAILED(root->GetChildList(kPrefRoot, children))) {
+  if (!root || NS_FAILED(root->GetChildList(kPrefRoot.get(), children))) {
     return;
   }
 
-  nsTArray<nsAutoCString> ids;
+  // Fixed-capacity string types (nsAutoCString) cannot live in a container;
+  // nsCString elements copy the id out of the temporary.
+  nsTArray<nsCString> ids;
   nsTArray<bool> hasKey;
   for (const nsCString& child : children) {
     // <root><b64url credentialId>.<field>; b64url never contains '.'.
-    int32_t dot = child.RFind('.');
+    int32_t dot = child.RFindChar('.');
     if (dot < 0 ||
         static_cast<uint32_t>(dot) <= kPrefRoot.Length()) {
       continue;
@@ -78,7 +89,7 @@ void RozeLynxPasskeyStore::GetAll(nsTArray<RozeLynxPasskeyRecord>& aOut) {
   }
 
   for (size_t i = 0; i < ids.Length(); i++) {
-    const nsAutoCString& id = ids[i];
+    const nsCString& id = ids[i];
     if (!hasKey[i]) {
       continue;
     }
@@ -86,22 +97,21 @@ void RozeLynxPasskeyStore::GetAll(nsTArray<RozeLynxPasskeyRecord>& aOut) {
     if (!B64Decode(id, record.mCredentialId)) {
       continue;
     }
-    record.mRpId = Preferences::GetCString(PrefFor(id, ".rpid"));
+    record.mRpId = GetStringPref(PrefFor(id, ".rpid"));
     record.mUserName =
-        NS_ConvertUTF8ToUTF16(Preferences::GetCString(PrefFor(id, ".user")));
-    record.mUserDisplayName = NS_ConvertUTF8toUTF16(
-        Preferences::GetCString(PrefFor(id, ".disp")));
-    B64Decode(Preferences::GetCString(PrefFor(id, ".handle")),
-              record.mUserHandle);
-    if (!B64Decode(Preferences::GetCString(PrefFor(id, ".key")),
+        NS_ConvertUTF8toUTF16(GetStringPref(PrefFor(id, ".user")));
+    record.mUserDisplayName =
+        NS_ConvertUTF8toUTF16(GetStringPref(PrefFor(id, ".disp")));
+    B64Decode(GetStringPref(PrefFor(id, ".handle")), record.mUserHandle);
+    if (!B64Decode(GetStringPref(PrefFor(id, ".key")),
                    record.mPkcs8) ||
         record.mPkcs8.IsEmpty()) {
       continue;  // No usable private key.
     }
-    record.mSignCount =
-        std::clamp(Preferences::GetInt(PrefFor(id, ".count"), 0), 0, INT32_MAX);
-    record.mResident = Preferences::GetBool(PrefFor(id, ".rk"), true);
-    nsAutoCString created(Preferences::GetCString(PrefFor(id, ".created")));
+    record.mSignCount = std::clamp(
+        Preferences::GetInt(PrefFor(id, ".count").get(), 0), 0, INT32_MAX);
+    record.mResident = Preferences::GetBool(PrefFor(id, ".rk").get(), true);
+    nsAutoCString created(GetStringPref(PrefFor(id, ".created")));
     record.mCreated = strtoll(created.get(), nullptr, 10);
     if (record.mCreated <= 0) {
       record.mCreated = 0;
@@ -128,20 +138,21 @@ void RozeLynxPasskeyStore::Put(const RozeLynxPasskeyRecord& aRecord) {
   nsAutoCString created;
   created.AppendInt(aRecord.mCreated);
 
-  Preferences::SetCString(PrefFor(credIdB64, ".rpid"), aRecord.mRpId);
+  Preferences::SetCString(PrefFor(credIdB64, ".rpid").get(), aRecord.mRpId);
   Preferences::SetCString(
-      PrefFor(credIdB64, ".user"),
+      PrefFor(credIdB64, ".user").get(),
       NS_ConvertUTF16toUTF8(aRecord.mUserName));
   Preferences::SetCString(
-      PrefFor(credIdB64, ".disp"),
+      PrefFor(credIdB64, ".disp").get(),
       NS_ConvertUTF16toUTF8(aRecord.mUserDisplayName));
-  Preferences::SetCString(PrefFor(credIdB64, ".handle"), handleB64);
-  Preferences::SetCString(PrefFor(credIdB64, ".key"), keyB64);
-  Preferences::SetInt(PrefFor(credIdB64, ".count"),
-                      std::clamp(static_cast<int64_t>(aRecord.mSignCount),
-                                 int64_t(0), int64_t(INT32_MAX)));
-  Preferences::SetBool(PrefFor(credIdB64, ".rk"), aRecord.mResident);
-  Preferences::SetCString(PrefFor(credIdB64, ".created"), created);
+  Preferences::SetCString(PrefFor(credIdB64, ".handle").get(), handleB64);
+  Preferences::SetCString(PrefFor(credIdB64, ".key").get(), keyB64);
+  Preferences::SetInt(PrefFor(credIdB64, ".count").get(),
+                      static_cast<int32_t>(std::clamp(
+                          static_cast<int64_t>(aRecord.mSignCount),
+                          int64_t(0), int64_t(INT32_MAX))));
+  Preferences::SetBool(PrefFor(credIdB64, ".rk").get(), aRecord.mResident);
+  Preferences::SetCString(PrefFor(credIdB64, ".created").get(), created);
 }
 
 void RozeLynxPasskeyStore::UpdateSignCount(
@@ -154,9 +165,9 @@ void RozeLynxPasskeyStore::UpdateSignCount(
     return;
   }
   Preferences::SetInt(
-      PrefFor(credIdB64, ".count"),
-      std::clamp(static_cast<int64_t>(aSignCount), int64_t(0),
-                 int64_t(INT32_MAX)));
+      PrefFor(credIdB64, ".count").get(),
+      static_cast<int32_t>(std::clamp(static_cast<int64_t>(aSignCount),
+                                      int64_t(0), int64_t(INT32_MAX))));
 }
 
 void RozeLynxPasskeyStore::Remove(const nsTArray<uint8_t>& aCredentialId) {
@@ -170,8 +181,8 @@ void RozeLynxPasskeyStore::Remove(const nsTArray<uint8_t>& aCredentialId) {
   };
   for (const char* field : kFields) {
     nsAutoCString pref(PrefFor(credIdB64, field));
-    if (Preferences::HasUserValue(pref)) {
-      Preferences::ClearUser(pref);
+    if (Preferences::HasUserValue(pref.get())) {
+      Preferences::ClearUser(pref.get());
     }
   }
 }

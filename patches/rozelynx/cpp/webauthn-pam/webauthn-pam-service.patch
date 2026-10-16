@@ -30,7 +30,7 @@ constant lets the login dropdown label RozeLynx-stored passkeys.
  #endif
  
 +#ifdef MOZ_WIDGET_GTK
-+#  include "mozilla/dom/RozeLynxPamWebAuthnService.h"
++#  include "rozelynx-pam/RozeLynxPamWebAuthnService.h"
 +#endif
 +
  namespace mozilla::dom {
