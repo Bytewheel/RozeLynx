@@ -6,7 +6,7 @@ Please do not use this browser in sensitive operations without being aware of th
 
 This software is provided as-is, without any warranty as expressed or implied.
 
-# RozeLynx
+# [RozeLynx](https://buymeacoffee.com/burningserenity)  
 
 Firefox fork, including Librewolf and Floorp patches, plus more.
 
