@@ -54,6 +54,10 @@ void AppendUnsigned(nsTArray<uint8_t>& aOut, uint64_t aValue) {
   AppendHead(aOut, 0, aValue);
 }
 
+void AppendMap(nsTArray<uint8_t>& aOut, uint64_t aCount) {
+  AppendHead(aOut, 5, aCount);
+}
+
 void AppendNegative(nsTArray<uint8_t>& aOut, uint64_t aValue) {
   AppendHead(aOut, 1, aValue);
 }
@@ -94,10 +98,13 @@ bool RozeLynxPamCrypto::GenerateEs256KeyPair(nsTArray<uint8_t>& aPkcs8,
   SECItem ecParams = {siBuffer, oid, static_cast<unsigned int>(2 + oid[1])};
 
   SECKEYPublicKey* pub = nullptr;
-  // Session key (permanent=false, sensitive=true): never lands in an NSS
-  // database; exported to PKCS#8 right away.
+  // Session key (permanent=false): never lands in an NSS database, and
+  // sensitive=false is required for PK11_ExportDERPrivateKeyInfo below to
+  // succeed (NSS refuses to export sensitive keys); the key is exported to
+  // PKCS#8 immediately and the in-memory object destroyed right after.
+  // This matches how dom/crypto/WebCryptoTask.cpp generates EC keys.
   UniqueSECKEYPrivateKey priv(PK11_GenerateKeyPair(
-      slot.get(), CKM_EC_KEY_PAIR_GEN, &ecParams, &pub, PR_FALSE, PR_TRUE,
+      slot.get(), CKM_EC_KEY_PAIR_GEN, &ecParams, &pub, PR_FALSE, PR_FALSE,
       nullptr));
   UniqueSECKEYPublicKey pubKey(pub);
   if (!priv || !pubKey || pubKey->keyType != ecKey ||
@@ -144,8 +151,14 @@ bool RozeLynxPamCrypto::SignEs256Digest(const nsTArray<uint8_t>& aPkcs8,
   if (!sig) {
     return false;
   }
-  // CKM_ECDSA signs the raw digest and yields the DER ECDSA-Sig-Value that
-  // the WebAuthn ES256 algorithm identifier promises.
+  // CKM_ECDSA signs the raw digest, but per the PKCS#11 spec (and this
+  // NSS's softoken) the signature it returns is the RAW P1363 r||s form,
+  // NOT the DER ECDSA-Sig-Value that the WebAuthn ES256 algorithm
+  // identifier promises. Strict relying parties (Okta, for one) reject
+  // the raw form outright. Older NSS versions did return DER here, and a
+  // P-256 DER signature is at least 70 bytes, so exactly 64 bytes
+  // (2 x 32-byte fields) is unambiguously raw; anything else passes
+  // through unchanged.
   rv = PK11_SignWithMechanism(priv.get(), CKM_ECDSA, nullptr, sig.get(),
                               &digestItem);
   if (rv != SECSuccess) {
@@ -153,7 +166,36 @@ bool RozeLynxPamCrypto::SignEs256Digest(const nsTArray<uint8_t>& aPkcs8,
   }
 
   aSignature.Clear();
-  aSignature.AppendElements(sig->data, sig->len);
+  if (sig->len == 64) {
+    // DER: SEQUENCE { INTEGER r, INTEGER s }, minimal integer encoding.
+    const uint8_t* fields[2] = {sig->data, sig->data + 32};
+    size_t content = 0;
+    for (const uint8_t* f : fields) {
+      size_t start = 0;
+      while (start < 31 && f[start] == 0) {
+        start++;
+      }
+      content += 2 + (32 - start) + ((f[start] & 0x80) ? 1 : 0);
+    }
+    aSignature.AppendElement(0x30);
+    aSignature.AppendElement(static_cast<uint8_t>(content));
+    for (const uint8_t* f : fields) {
+      size_t start = 0;
+      while (start < 31 && f[start] == 0) {
+        start++;
+      }
+      size_t len = 32 - start;
+      bool pad = f[start] & 0x80;
+      aSignature.AppendElement(0x02);
+      aSignature.AppendElement(static_cast<uint8_t>(len + (pad ? 1 : 0)));
+      if (pad) {
+        aSignature.AppendElement(0);
+      }
+      aSignature.AppendElements(f + start, len);
+    }
+  } else {
+    aSignature.AppendElements(sig->data, sig->len);
+  }
   return true;
 }
 
@@ -169,7 +211,7 @@ bool RozeLynxPamCrypto::GetRandomBytes(uint8_t* aOut, size_t aLength) {
 
 void RozeLynxPamCrypto::BuildCoseEc2Key(const uint8_t aPublicSec1[65],
                                         nsTArray<uint8_t>& aOut) {
-  AppendUnsigned(aOut, 5);  // map(5)
+  AppendMap(aOut, 5);
   AppendUnsigned(aOut, 1);  // kty: 2 (EC2)
   AppendUnsigned(aOut, 2);
   AppendUnsigned(aOut, 3);  // alg
@@ -215,11 +257,11 @@ void RozeLynxPamCrypto::BuildAssertionAuthData(const uint8_t aRpIdHash[32],
 void RozeLynxPamCrypto::BuildNoneAttestationObject(
     const nsTArray<uint8_t>& aAuthData, nsTArray<uint8_t>& aOut) {
   aOut.Clear();
-  AppendUnsigned(aOut, 3);  // map(3)
+  AppendMap(aOut, 3);
   AppendText(aOut, "fmt", sizeof("fmt") - 1);
   AppendText(aOut, "none", sizeof("none") - 1);
   AppendText(aOut, "attStmt", sizeof("attStmt") - 1);
-  AppendUnsigned(aOut, 0);  // empty map
+  AppendMap(aOut, 0);
   AppendText(aOut, "authData", sizeof("authData") - 1);
   AppendBytes(aOut, aAuthData.Elements(), aAuthData.Length());
 }

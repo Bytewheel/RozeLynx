@@ -89,6 +89,7 @@ VERSIONS_CONF="${SELF_DIR}/rozelynx-distro-versions.conf"
 # pinned-source defaults (rozelynx-distro-versions.conf), env overrides win
 # ---------------------------------------------------------------------------
 FIREFOX_VERSION=""
+APP_VERSION=""
 GENTOO_PATCHSET=""
 GENTOO_PATCHSET_BASE_URI=""
 FIREFOX_SOURCE_SHA512=""
@@ -108,6 +109,7 @@ if [[ -r ${VERSIONS_CONF} ]]; then
     source "${VERSIONS_CONF}"
 fi
 [[ -n ${ROZELYNX_FIREFOX_VERSION:-} ]] && FIREFOX_VERSION="${ROZELYNX_FIREFOX_VERSION}"
+[[ -n ${ROZELYNX_APP_VERSION:-} ]] && APP_VERSION="${ROZELYNX_APP_VERSION}"
 [[ -n ${ROZELYNX_LIBREWOLF_REF:-} ]] && LIBREWOLF_REF="${ROZELYNX_LIBREWOLF_REF}"
 [[ -n ${ROZELYNX_FLOORP_REF:-} ]] && FLOORP_REF="${ROZELYNX_FLOORP_REF}"
 
@@ -252,7 +254,8 @@ while [[ $# -gt 0 ]]; do
         --jobs|-j)  JOBS="${2:?}"; shift ;;
         --prefix)   PREFIX="${2:?}"; shift ;;
         --libdir)   LIBDIR="${2:?}"; shift ;;
-        --firefox)  FIREFOX_VERSION="${2:?}"; shift ;;
+        --firefox)      FIREFOX_VERSION="${2:?}"; shift ;;
+        --app-version)  APP_VERSION="${2:?}"; shift ;;
         --librewolf-ref) LIBREWOLF_REF="${2:?}"; shift ;;
         --floorp-ref)    FLOORP_REF="${2:?}"; shift ;;
         --use|--no-use)
@@ -340,6 +343,11 @@ unset _cand
 GNU_TRIPLET="${ARCH}-unknown-linux-gnu"
 
 [[ -n ${FIREFOX_VERSION} ]] || die "FIREFOX_VERSION not set (edit ${VERSIONS_CONF} or pass --firefox VER)"
+# The release version the browser reports and the artifacts are named
+# with. Defaults to the Firefox base (plain upstream-aligned builds);
+# rozelynx-only point releases bump it via rozelynx-distro-versions.conf
+# (APP_VERSION) while the source pin above stays at the Firefox version.
+APP_VERSION="${APP_VERSION:-${FIREFOX_VERSION}}"
 MOZ_P="firefox-${FIREFOX_VERSION}"
 FIREFOX_SRC_TARBALL="${MOZ_P}.source.tar.xz"
 FIREFOX_SRC_URI="https://archive.mozilla.org/pub/firefox/releases/${FIREFOX_VERSION}/source/${FIREFOX_SRC_TARBALL}"
@@ -898,6 +906,7 @@ PWAMOZ
             apply_one_patch "${LW}/fullpage-translations-utils-154.patch" -p1
         fi
         apply_one_patch "${LW}/fullpage-translations-customization.patch" -p1
+        apply_one_patch "${SRC_ROOT}/rozelynx/fullpage-translations-reliability.patch" -p1
         any_lw_patch=1
     fi
     use extension-uninstall-url && { apply_one_patch "${LW}/extensions-setUninstallURL.patch" -p1; any_lw_patch=1; }
@@ -976,6 +985,17 @@ PWAMOZ
     [[ -n ${ROZELYNX_API_KEY_GOOGLE:-} ]] && printf '%s' "${ROZELYNX_API_KEY_GOOGLE}" > api-google.key
     [[ -n ${ROZELYNX_API_KEY_LOCATION:-} ]] && printf '%s' "${ROZELYNX_API_KEY_LOCATION}" > api-location.key
     [[ -n ${ROZELYNX_API_KEY_MOZILLA:-} ]] && printf '%s' "${ROZELYNX_API_KEY_MOZILLA}" > api-mozilla.key
+
+    # rozelynx point release: the app version can be bumped past the pinned
+    # Firefox base (APP_VERSION, e.g. 158.0.1 on firefox-158.0) for
+    # rozelynx-only fixes. application.ini, the omnijar version bits and
+    # every update check derive from these two files; the Gecko milestone
+    # (config/milestone.txt) stays at the base version.
+    if [[ ${APP_VERSION} != "${FIREFOX_VERSION}" ]]; then
+        printf '%s\n' "${APP_VERSION}" > browser/config/version.txt
+        printf '%s\n' "${APP_VERSION}" > browser/config/version_display.txt
+        log "  rozelynx point release: app version ${APP_VERSION} on firefox ${FIREFOX_VERSION}"
+    fi
 
     log "prepare complete: ${BUILD_SRC}"
 }
@@ -1203,7 +1223,7 @@ render_launcher() {  # render_launcher TEMPLATE OUT PREFIX_EXPR LIBDIR WAYLAND
         -e "s#^\(\(export \)\{0,1\}PREFIX=\).*#\1\"${prefix_expr}\"#" \
         -e "s#^\(\(export \)\{0,1\}DEFAULT_WAYLAND=\).*#\1\"${wayland}\"#" \
         -e "s#^\(MOZ_LAUNCHER=\).*#\1\"\${PREFIX}/${libdir}/rozelynx/rozelynx\"#" \
-        -e "s#^\(\(export \)\{0,1\}ROZELYNX_VERSION=\).*#\1\"${FIREFOX_VERSION}\"#" \
+        -e "s#^\(\(export \)\{0,1\}ROZELYNX_VERSION=\).*#\1\"${APP_VERSION}\"#" \
         -e "s#^\(\(export \)\{0,1\}ROZELYNX_BUILD=\).*#\1\"$(date -u +%Y-%m-%d)\"#" \
         -e 's#^\(export \)\{0,1\}MOZ_USER_DIR=.*#export MOZ_USER_DIR="${MOZ_USER_DIR:-${HOME}/.config/rozelynx}"#' \
         "${tmpl}" > "${out}"
@@ -1241,7 +1261,7 @@ stage_install() {
     cat > "${FIVE}/distribution/distribution.ini" <<EOF
 [Global]
 id=rozelynx
-version=${FIREFOX_VERSION}
+version=${APP_VERSION}
 about=RozeLynx Web Browser by ByteWheel
 
 [Preferences]
@@ -1524,7 +1544,7 @@ stage_package() {
         || die "staging tree missing - run the install stage first"
 
     if [[ ${PKG_TARBALL} == yes ]]; then
-        local out="${DIST}/rozelynx-${FIREFOX_VERSION}-${ARCH}.tar.xz"
+        local out="${DIST}/rozelynx-${APP_VERSION}-${ARCH}.tar.xz"
         log "packaging tarball: ${out}"
         (cd "${STAGE}" && tar --xattrs --xattrs-include='*.*' -cJf "${out}" usr) \
             || die "tarball packaging failed"
@@ -1588,7 +1608,7 @@ EOF
         -resize 256x256 "${appdir}/rozelynx.png" 2>/dev/null \
         || cp "${appdir}${PREFIX}/share/icons/hicolor/128x128/apps/rozelynx.png" "${appdir}/rozelynx.png"
 
-    local out="${DIST}/RozeLynx-${FIREFOX_VERSION}-${ARCH}.AppImage"
+    local out="${DIST}/RozeLynx-${APP_VERSION}-${ARCH}.AppImage"
     log "running appimagetool (${tool})"
     ARCH_APPIMAGE_EXTRACT_AND_RUN=1 "${tool}" "${appdir}" "${out}" \
         || die "appimagetool failed"
@@ -1629,7 +1649,7 @@ pkg_flatpak() {
     chmod 0755 "${payload_root}/bin/rozelynx"
     mv "${payload_root}/share/applications/rozelynx.desktop" \
        "${payload_root}/share/applications/org.bytewheel.rozelynx.desktop"
-    local payload="${fbdir}/rozelynx-${FIREFOX_VERSION}-payload.tar.xz"
+    local payload="${fbdir}/rozelynx-${APP_VERSION}-payload.tar.xz"
     (cd "${payload_root}" && tar -cJf "${payload}" .) || die "payload tar failed"
 
     # howdy face authentication (pam-passkeys) needs the camera
@@ -1685,7 +1705,7 @@ EOF
         "${fbdir}/build" "${fbdir}/org.bytewheel.rozelynx.json" \
         || die "flatpak-builder failed"
 
-    local out="${DIST}/RozeLynx-${FIREFOX_VERSION}.flatpak"
+    local out="${DIST}/RozeLynx-${APP_VERSION}.flatpak"
     log "flatpak build-bundle"
     flatpak build-bundle "${repo}" "${out}" org.bytewheel.rozelynx \
         || die "flatpak build-bundle failed"
@@ -1713,7 +1733,7 @@ pkg_snap() {
     mkdir -p "${primedir}/meta/gui/icons"
     cat >"${primedir}/meta/snap.yaml" <<EOF
 name: rozelynx
-version: "${FIREFOX_VERSION}"
+version: "${APP_VERSION}"
 summary: RozeLynx Web Browser
 description: |
   RozeLynx: a Firefox-based browser by ByteWheel with Floorp-derived
@@ -1749,7 +1769,7 @@ EOF
         || cp "${primedir}/usr/share/icons/hicolor/128x128/apps/rozelynx.png" \
               "${primedir}/meta/gui/icons/rozelynx.png"
 
-    local out="${DIST}/rozelynx_${FIREFOX_VERSION}_${SNAP_ARCH}.snap"
+    local out="${DIST}/rozelynx_${APP_VERSION}_${SNAP_ARCH}.snap"
     if command -v snap >/dev/null 2>&1 && snap pack --help >/dev/null 2>&1; then
         log "snap pack"
         snap pack "${primedir}" "${DIST}" || die "snap pack failed"

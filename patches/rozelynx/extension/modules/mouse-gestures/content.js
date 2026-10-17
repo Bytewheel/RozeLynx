@@ -664,7 +664,7 @@
     var t = lastContextTarget;
     var info = {
       src: window.location.href, tag: '', href: '', imgSrc: '', mediaSrc: '',
-      sel: false
+      hasSelection: false
     };
     if (t && t.nodeType === 1) {
       info.tag = t.tagName;
@@ -676,7 +676,7 @@
       if (media) info.mediaSrc = media.currentSrc || media.src;
     }
     var sel = window.getSelection();
-    info.sel = !!(sel && !sel.isCollapsed);
+    info.hasSelection = !!(sel && !sel.isCollapsed);
 
     // A rejected sendMessage means the background module is not in this build.
     // Nothing is rendered either way; the difference is that the reason is

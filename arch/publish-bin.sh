@@ -87,8 +87,9 @@ log "regenerated arch/rozelynx-bin/.SRCINFO"
         gh release create "v${ver}" \
             --title "RozeLynx ${ver}" \
             --notes "RozeLynx ${ver} prebuilt tarball: a staged usr/ tree built
-against glibc by rozelynx-distro-build.sh (Firefox ${ver} + the RozeLynx
-patch set; see the repository README).
+against glibc by rozelynx-distro-build.sh (the RozeLynx patch set on the
+Firefox base pinned by rozelynx-distro-versions.conf at this tag; see
+the repository README).
 
 Note: this build enables the Wayland-only GTK toolkit (built on a
 Wayland-only host). It needs a Wayland session; for X11/X11-only

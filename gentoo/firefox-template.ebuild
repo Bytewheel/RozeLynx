@@ -1927,6 +1927,7 @@ PWAMOZ
 			eapply "${FILESDIR}/librewolf/fullpage-translations-utils-154.patch"
 		fi
 		eapply "${FILESDIR}/librewolf/fullpage-translations-customization.patch"
+		eapply "${FILESDIR}/rozelynx/fullpage-translations-reliability.patch"
 	fi
 	if use extension-uninstall-url; then
 		eapply "${FILESDIR}/librewolf/extensions-setUninstallURL.patch"

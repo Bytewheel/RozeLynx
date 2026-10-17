@@ -1,0 +1,89 @@
+diff --git a/browser/components/translations/content/fullPageTranslationsPanel.js b/browser/components/translations/content/fullPageTranslationsPanel.js
+--- a/browser/components/translations/content/fullPageTranslationsPanel.js
++++ b/browser/components/translations/content/fullPageTranslationsPanel.js
+@@ -1287,11 +1287,50 @@
+     const actor = TranslationsParent.getTranslationsActor(
+       gBrowser.selectedBrowser
+     );
+-    const [sourceLanguage, sourceVariant] =
++    let [sourceLanguage, sourceVariant] =
+       this.elements.fromMenuList.value.split(",");
+-    const [targetLanguage, targetVariant] =
++    let [targetLanguage, targetVariant] =
+       this.elements.toMenuList.value.split(",");
+ 
++    // RozeLynx: the panel can be shown and this handler can run before the
++    // page language detection has populated the language selectors - for
++    // example when the urlbar button is clicked right after the page load
++    // while the first Remote Settings records sync is still in flight, or
++    // while the page content language is still being identified.
++    // Upstream forwards the empty pair to the actor, whose translate()
++    // then returns without any user feedback - a dead Translate button.
++    // Resolve the pair from the actor's detected language tags instead,
++    // and only bail out with a visible error when nothing can be
++    // resolved at all.
++    if (!sourceLanguage || !targetLanguage) {
++      let langTags = actor.languageState?.detectedLanguages;
++      if (!langTags?.docLangTag || !langTags?.userLangTag) {
++        langTags = await actor.getLangTags().catch(() => null);
++      }
++      if (!sourceLanguage && langTags?.docLangTag) {
++        sourceLanguage = langTags.docLangTag;
++      }
++      if (!targetLanguage && langTags?.userLangTag) {
++        targetLanguage = langTags.userLangTag;
++      }
++    }
++
++    if (!sourceLanguage || !targetLanguage) {
++      this.console?.error(
++        "Unable to determine the source or target language for translation."
++      );
++      const { cancelButton, errorHintAction } = this.elements;
++      this.#showError({
++        message: "translations-panel-error-load-languages",
++        hint: "translations-panel-error-load-languages-hint",
++        actionText: "translations-panel-error-load-languages-hint-button",
++        actionCommand: () => this.#reloadLangList(actor),
++      });
++      cancelButton.hidden = false;
++      errorHintAction.disabled = false;
++      return;
++    }
++
+     actor.translate(
+       { sourceLanguage, targetLanguage, sourceVariant, targetVariant },
+       false // reportAsAutoTranslate
+
+diff --git a/toolkit/components/translations/actors/TranslationsParent.sys.mjs b/toolkit/components/translations/actors/TranslationsParent.sys.mjs
+--- a/toolkit/components/translations/actors/TranslationsParent.sys.mjs
++++ b/toolkit/components/translations/actors/TranslationsParent.sys.mjs
+@@ -4599,6 +4599,28 @@
+       return;
+     }
+ 
++    // RozeLynx: the FullPageTranslationsPanel can request a translation
++    // while its language selectors are still unpopulated (in the first
++    // seconds of a page load, or while the Remote Settings records sync
++    // is in flight). An empty pair used to make translate() return
++    // silently here, with no feedback for the user. Resolve missing pair
++    // members from the detected language tags before giving up.
++    if (!languagePair.sourceLanguage || !languagePair.targetLanguage) {
++      let detected = this.languageState?.detectedLanguages;
++      if (!detected?.docLangTag || !detected?.userLangTag) {
++        detected = await this.getLangTags().catch(() => null);
++      }
++      if (detected) {
++        languagePair = { ...languagePair };
++        if (!languagePair.sourceLanguage && detected.docLangTag) {
++          languagePair.sourceLanguage = detected.docLangTag;
++        }
++        if (!languagePair.targetLanguage && detected.userLangTag) {
++          languagePair.targetLanguage = detected.userLangTag;
++        }
++      }
++    }
++
+     const { sourceLanguage, targetLanguage } = languagePair;
+     if (!sourceLanguage || !targetLanguage) {
+       lazy.console.error(
