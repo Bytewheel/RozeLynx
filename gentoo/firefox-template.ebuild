@@ -966,10 +966,11 @@ src_prepare() {
 		fi
 
 		# --- Replace Firefox branding icons with RozeLynx branding ---
-		# Branding sources live in files/rozelynx/branding/{main,dark,light}/.
+		# Branding sources live in files/rozelynx/branding/{main,dark}/.
 		# Image 1 (main): cat-on-clouds — newtab background + largest branding.
-		# Image 2 (dark):  line-art icon  — dark-mode iconography (window icons, about:privatebrowsing).
-		# Image 3 (light): line-art icon  — light-mode iconography.
+		# Image 2 (dark):  line-art icon — dark-mode iconography (window icons,
+		# about:privatebrowsing placeholders). The light/ variant was deleted
+		# with the other unused logos; dark/no-text.png covers its slots.
 		local branding_src="${FILESDIR}/rozelynx/branding"
 		local branding_dir="browser/branding/rozelynx"
 
@@ -1671,8 +1672,10 @@ See files/rozelynx/branding/PLACEHOLDERS.md. -->"
 		# (defaults/settings/main/newtab-wallpapers-v2.json). Neither path
 		# has a build-time branding slot: branding it would mean rewriting a
 		# Mozilla-maintained catalogue or picking a colour for the user.
-		# Recorded rather than faked; branding/main/full.png stays in the
-		# repo as unused artwork.
+		# Recorded rather than faked; the old branding/main/full.png (and the
+		# {dark,light}/wordmark.png + light/no-text.png siblings) were deleted
+		# from the overlay as unused artwork — nothing reads them, so nothing
+		# regenerates them either.
 	fi
 
 	# --- RozeLynx debug patches ---
