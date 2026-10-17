@@ -351,8 +351,8 @@ ByteWheel marketing path, which no longer exists on this machine).
 
 This is the PWA fallback, and it is deliberately *not* wired through the
 hicolor theme: a generated `.desktop` entry used to fall back to
-`Icon=rozelynx`, and the theme's `scalable/apps/rozelynx.svg` slot is the
-**discontinued old logo** — so a PWA without a usable icon launched with
+`Icon=rozelynx`, and the theme's `scalable/apps/rozelynx.svg` slot used to be
+the **discontinued old logo** — so a PWA without a usable icon launched with
 the old logo in the launcher and the default mark in the taskbar. The
 extension (`modules/pwa/background.js`, v1.0.73) now materialises a *file*
 before ever emitting a theme name: the site icon, a stored candidate URL,
@@ -363,6 +363,19 @@ renders directly. The `rozelynx` theme name survives only as the last resort
 of a parent that cannot write files at all, and the extension's own
 `hasDesktopEntry` read-back lets the start-up reconcile pass *upgrade*
 entries an earlier version left on the theme name.
+
+**Theme-name fallback closed (2026-10-17).** The theme name itself no longer
+resolves to the discontinued logo: both the ebuild and the distro script now
+GENERATE `hicolor/scalable/apps/rozelynx.svg` from `branding/paw.png` (the
+same mark the `hicolor/<n>x<n>/apps/rozelynx.png` ladder carries), as a
+base64 `<image>` SVG — so the `.desktop`'s own `Icon=`, the notification
+badge and any last-resort PWA entry all render the current mark, and the
+scalable slot and the PNG ladder can no longer disagree. `icon/rozelynx.svg`
+(the rose) remains the *in-chrome* rebranding sweep source only — see
+"Current vector sources" below. A related field failure was found the same
+day: `<profile>/pwa-icons` created as a zero-byte *file* (not a directory)
+makes every `writeIconFile` rung in that profile fail, which pins its PWA
+entries to the theme-name fallback; the directory is what the ladder expects.
 
 Because the fallback rides inside the extension, no ebuild or distro-script
 change is involved: `assemble-extension.py` copies `icons/` wholesale, so
