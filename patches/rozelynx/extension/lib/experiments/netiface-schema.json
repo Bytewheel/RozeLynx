@@ -84,7 +84,8 @@
                 "pattern": { "type": "string" },
                 "iface": { "type": "string" },
                 "enabled": { "type": "boolean" }
-              }
+              },
+              "additionalProperties": { "type": "any" }
             }
           }
         ]

@@ -132,6 +132,16 @@ ALL_FLAGS=(
     i18n mouse-gestures qr-code pwa lepton-skin ip-protection net-iface
     download-handoff pam-passkeys
 )
+# system-harfbuzz is deliberately NOT on by default: with it, the skia
+# unified TU that includes Skia's harfbuzz adapter references hb_* with
+# STV_HIDDEN (Skia's own #pragma GCC visibility push(hidden) sits over the
+# hb headers), and libxul's -z defs link then fails on a fresh objdir -
+# ld.lld ("undefined hidden symbol", the merged visibility cannot bind to
+# libharfbuzz.so) and ld.bfd ("undefined reference") alike. The shipped
+# v158.0.x tarballs and the emerged binary both carry VENDORED harfbuzz
+# (a local `t hb_blob_destroy` inside libxul), so vendored is also the
+# release lineage. --use system-harfbuzz stays available for anyone who
+# wants to fight the skia visibility merge on their own toolchain.
 DEFAULT_USE_ON=(
     rozelynx chrome-web-store experiments external-browser i18n mouse-gestures
     qr-code pwa lepton-skin ip-protection net-iface download-handoff
@@ -141,7 +151,7 @@ DEFAULT_USE_ON=(
     privacy-ui translation-fullpage extension-uninstall-url permission-tweaks
     ui-tweaks link-preview xdg-profile newtab-fixes
     clang dbus hwaccel pulseaudio wayland X wifi
-    system-av1 system-harfbuzz system-icu system-jpeg system-libevent
+    system-av1 system-icu system-jpeg system-libevent
     system-libvpx system-webp
     gmp-autoupdate jpegxl jumbo-build
 )
@@ -1481,6 +1491,24 @@ PWAMOZ
         apply_one_patch "${LW}/urlbarprovider-interventions.patch" -p1
         any_lw_patch=1
     fi
+    # Sponsored suggestions (Firefox Suggest AMP) default ON for several
+    # regions by a startup default-branch rewrite in QuickSuggest.sys.mjs
+    # (SUGGEST_PREFS["suggest.quicksuggest.sponsored"].defaultValues), so the
+    # librewolf.cfg pref alone loses the race and the flag needs the source
+    # patch.  Two shapes: 157+ carries the EU-157 spread; 156 does not; below
+    # 156 the table layout is unverified, so the patch is skipped (the cfg
+    # lockPref still removes the ads there) rather than risk prepare.
+    if use remove-sponsored; then
+        if ver_ge "${FIREFOX_VERSION}" 158.0; then
+            apply_one_patch "${LW}/remove-sponsored-158.patch" -p1
+            any_lw_patch=1
+        elif ver_ge "${FIREFOX_VERSION}" 156.0; then
+            apply_one_patch "${LW}/remove-sponsored.patch" -p1
+            any_lw_patch=1
+        else
+            warn "  remove-sponsored: no verified QuickSuggest patch shape below 156 - cfg lockPref only"
+        fi
+    fi
     if use privacy-ui; then
         apply_one_patch "${LW}/ui-patches/privacy-preferences.patch" -p1
         apply_one_patch "${LW}/ui-patches/hide-default-browser.patch" -p1
@@ -2474,10 +2502,16 @@ main() {
     local s ran_install=0
     if [[ ${#STAGES[@]} -eq 0 ]]; then
         STAGES+=(fetch prepare configure build install)
-        if [[ ${PKG_TARBALL} == yes || ${PKG_APPIMAGE} == yes \
-              || ${PKG_FLATPAK} == yes || ${PKG_SNAP} == yes ]]; then
-            STAGES+=(package)
-        fi
+    fi
+    # `all` fills STAGES explicitly, so the package append used to live
+    # inside the empty-STAGES branch above - where `all --tarball` never
+    # reached it and the packaging flags were silently ignored: a full
+    # build "succeeded" and left the previous dist/ tarball untouched.
+    # Append package whenever a format was asked for, regardless of how
+    # the stage list was built (the format checks stay inside the stage).
+    if [[ ${PKG_TARBALL} == yes || ${PKG_APPIMAGE} == yes \
+          || ${PKG_FLATPAK} == yes || ${PKG_SNAP} == yes ]]; then
+        STAGES+=(package)
     fi
     for s in "${STAGES[@]}"; do
         case "$s" in

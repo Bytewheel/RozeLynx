@@ -211,7 +211,12 @@ button:hover { background: #7C3AED; }
   color: #9ca3af;
   padding: 4px 2px 6px 2px;
 }
-.urlrules-empty button {
+.urlrules-empty {
+  font-size: 11px;
+  color: #9ca3af;
+  padding: 4px 2px 6px 2px;
+}
+#urlrules-add-current {
   margin-top: 6px;
   padding: 4px 10px;
   font-size: 11px;
@@ -452,10 +457,14 @@ button:hover { background: #7C3AED; }
     <div class="urlrules-preview" id="urlrules-preview"></div>
     <div class="urlrules-empty" id="urlrules-empty" hidden>
       No URL rules. Traffic follows your container and profile defaults.
-      <button type="button" id="urlrules-add-current">Add a rule for this site</button>
     </div>
     <div id="urlrules-list"></div>
     <div class="urlrules-add">
+      <!-- Deliberately outside urlrules-empty: it used to live there, and
+           the empty block is hidden as soon as any rule exists - which made
+           the button unreachable exactly when it is most wanted, with the
+           manual row as the only way to add the second rule. -->
+      <button type="button" id="urlrules-add-current">Add a rule for this site</button>
       <div class="urlrules-row">
         <input type="text" id="urlrules-new-pattern" placeholder="*.example.com" spellcheck="false">
         <select id="urlrules-new-iface"></select>

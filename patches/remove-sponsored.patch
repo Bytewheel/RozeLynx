@@ -1,0 +1,18 @@
+diff --git a/browser/components/urlbar/QuickSuggest.sys.mjs b/browser/components/urlbar/QuickSuggest.sys.mjs
+--- a/browser/components/urlbar/QuickSuggest.sys.mjs
++++ b/browser/components/urlbar/QuickSuggest.sys.mjs
+@@ -116,13 +116,7 @@
+   },
+   "suggest.quicksuggest.sponsored": {
+     nimbusVariableIfExposedInUi: "quickSuggestSponsoredEnabled",
+-    defaultValues: {
+-      DE: [["de"], true],
+-      FR: [["fr"], true],
+-      GB: [EN_LOCALES, true],
+-      IT: [["it"], true],
+-      US: [EN_LOCALES, true],
+-    },
++    defaultValues: {},
+   },
+ 
+   // Prefs related to individual features

@@ -578,3 +578,44 @@ index 46034d8d99..9807b024b8 100644
      "logging",
      "mathml",
      "media",
+diff --git a/browser/locales/en-US/chrome/browser/browser.properties b/browser/locales/en-US/chrome/browser/browser.properties
+--- a/browser/locales/en-US/chrome/browser/browser.properties
++++ b/browser/locales/en-US/chrome/browser/browser.properties
+@@ -119,6 +119,16 @@
+ canvas.allow2.accesskey=A
+ canvas.remember2=Remember this decision
+ 
++# WebGL permission prompt
++# LOCALIZATION NOTE (webgl.siteprompt2): %S is hostname
++webgl.siteprompt2=Allow %S to create a WebGL context?
++webgl.siteprompt2.warning=This may be used to uniquely identify your computer.
++webgl.block=Block
++webgl.block.accesskey=B
++webgl.allow2=Allow
++webgl.allow2.accesskey=A
++webgl.remember2=Remember this decision
++
+ # LOCALIZATION NOTE (identity.identified.verifier, identity.identified.state_and_country, identity.ev.contentOwner2):
+ # %S is the hostname of the site that is being displayed.
+ identity.identified.verifier=Verified by: %S
+diff --git a/browser/locales/en-US/browser/browser.ftl b/browser/locales/en-US/browser/browser.ftl
+--- a/browser/locales/en-US/browser/browser.ftl
++++ b/browser/locales/en-US/browser/browser.ftl
+@@ -52,6 +52,8 @@
+     .tooltiptext = Open Web Authentication panel
+ urlbar-canvas-notification-anchor =
+     .tooltiptext = Manage canvas extraction permission
++urlbar-webgl-notification-anchor =
++    .tooltiptext = Manage WebGL context creation permission
+ urlbar-web-rtc-share-microphone-notification-anchor =
+     .tooltiptext = Manage sharing your microphone with the site
+ urlbar-default-notification-anchor =
+@@ -178,6 +180,8 @@
+     .tooltiptext = You have blocked autoplay media with sound for this website.
+ urlbar-canvas-blocked =
+     .tooltiptext = You have blocked canvas data extraction for this website.
++urlbar-webgl-blocked =
++    .tooltiptext = You have blocked WebGL context creation for this website.
+ urlbar-midi-blocked =
+     .tooltiptext = You have blocked MIDI access for this website.
+ urlbar-serial-blocked =

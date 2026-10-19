@@ -147,8 +147,10 @@ this.rozelynxNetIface = class extends ExtensionAPIPersistent {
   }
 
   getAPI(context) {
-    const { Services } = ChromeUtils;
-
+    // `Services` is a global of the experiment sandbox (see the header);
+    // destructuring it off `ChromeUtils` shadows that with undefined (the
+    // WebIDL namespace carries no Services member), which made every
+    // Services.prefs call below - the whole URL-rule editor - throw.
     const CHIP_ID = "rozelynx-netiface-chip";
     // The chip is a chrome-window decoration running OUTSIDE extension
     // styling rules, so the icon must not depend on emoji fonts (which

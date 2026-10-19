@@ -174,6 +174,26 @@
     }
   }
 
+  /**
+   * A rule as the setUrlRules schema declares it. The rows rendered here
+   * come from getUrlRules(), whose records carry an extra `index` field -
+   * and Firefox's schema layer rejects a whole call over a single unknown
+   * object property (Schemas.sys.mjs ObjectType.normalize: "Unexpected
+   * property") unless the schema allows additionalProperties. Cloning the
+   * rows with Object.assign carried that index into every follow-up
+   * write, so the first add after a fresh install worked (the list was
+   * empty) and every later one died in validation. Project every stored
+   * row down to the three schema fields here.
+   */
+  function schemaRule(r) {
+    r = r || {};
+    return {
+      pattern: r.pattern || '',
+      iface: r.iface == null ? '' : String(r.iface),
+      enabled: r.enabled !== false,
+    };
+  }
+
   function patternHint(pattern) {
     return 'Pattern: ' + (pattern || '(empty)') +
       ' — tab binding > URL rule > container > profile';
@@ -202,7 +222,7 @@
         if (value === (rules[i].pattern || '')) {
           return;
         }
-        var next = rules.map(function(r) { return Object.assign({}, r); });
+        var next = rules.map(schemaRule);
         if (!value) {
           // An empty pattern is not a rule the service can use, so the row is
           // removed instead of being saved as a no-op.
@@ -218,7 +238,7 @@
       sel.title = 'Interface for this rule; empty = force default routing';
       fillIfaceSelect(sel, rule.iface || '');
       sel.addEventListener('change', function() {
-        var next = rules.map(function(r) { return Object.assign({}, r); });
+        var next = rules.map(schemaRule);
         next[i].iface = sel.value;
         write(next);
       });
@@ -230,7 +250,7 @@
       enabled.checked = rule.enabled !== false;
       enabled.title = 'Enable this rule';
       enabled.addEventListener('change', function() {
-        var next = rules.map(function(r) { return Object.assign({}, r); });
+        var next = rules.map(schemaRule);
         next[i].enabled = enabled.checked;
         write(next);
       });
@@ -241,7 +261,7 @@
       del.textContent = 'X';
       del.title = 'Delete this rule';
       del.addEventListener('click', function() {
-        var next = rules.map(function(r) { return Object.assign({}, r); });
+        var next = rules.map(schemaRule);
         next.splice(i, 1);
         write(next);
       });
@@ -318,7 +338,7 @@
       showStatus('Enter a pattern first.', true);
       return;
     }
-    var next = rules.map(function(r) { return Object.assign({}, r); });
+    var next = rules.map(schemaRule);
     next.push({ pattern: value, iface: newIface.value || '', enabled: true });
     newPattern.value = '';
     showStatus('');
