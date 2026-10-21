@@ -1889,6 +1889,7 @@ PWAMOZ
 		mkdir -p "${S}/netwerk/base/rozelynx-sync" || die
 		cp "${FILESDIR}/rozelynx/cpp/sync-scheme/"*.cpp \
 			"${FILESDIR}/rozelynx/cpp/sync-scheme/"*.h \
+			"${FILESDIR}/rozelynx/cpp/sync-scheme/"*.idl \
 			"${FILESDIR}/rozelynx/cpp/sync-scheme/"*.conf \
 			"${FILESDIR}/rozelynx/cpp/sync-scheme/moz.build" \
 			"${S}/netwerk/base/rozelynx-sync/" || die

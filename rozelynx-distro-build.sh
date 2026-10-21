@@ -1471,8 +1471,9 @@ PWAMOZ
         log "RozeLynx: sync magic-link scheme (rozelynxsync:)"
         local sy_src="${FILES}/rozelynx/cpp/sync-scheme"
         mkdir -p netwerk/base/rozelynx-sync
-        cp "${sy_src}/"*.cpp "${sy_src}/"*.h "${sy_src}/"*.conf \
-           "${sy_src}/moz.build" netwerk/base/rozelynx-sync/
+        cp "${sy_src}/"*.cpp "${sy_src}/"*.h "${sy_src}/"*.idl \
+           "${sy_src}/"*.conf "${sy_src}/moz.build" \
+           netwerk/base/rozelynx-sync/
         sed -i '/"url-classifier",/a\    "base/rozelynx-sync",' \
             netwerk/moz.build
     fi
