@@ -1451,11 +1451,19 @@ PWAMOZ
         # through to the browser's own flow with nothing lost.
         apply_one_patch "${dh_src}/handoff-exthandler.patch" -p1
         # Settings > General > Download hand-off: the handler editor.
-        # Same prefs, about:config stays the source of truth.
+        # Same prefs, about:config stays the source of truth. The jar.mn
+        # registration is a sed, not a patch hunk: the anchor line's
+        # position differs between patch orders (the ebuild's environment
+        # moves it), and a context-free insert after main.js is stable in
+        # both.
         apply_one_patch "${dh_src}/handoff-prefs-general.patch" -p1
         cp "${dh_src}/rozelynx-handoff.js" \
            "${dh_src}/rozelynx-handoff.inc.xhtml" \
            browser/components/preferences/
+        sed -i \
+            -e '/content\/browser\/preferences\/main.js/a\   content/browser/preferences/rozelynx-handoff.js' \
+            -e '/content\/browser\/preferences\/main.js/a\   content/browser/preferences/rozelynx-handoff.inc.xhtml' \
+            browser/components/preferences/jar.mn
     fi
 
     # --- sync: rozelynxsync:// magic-link scheme handler ---

@@ -1,0 +1,9 @@
+User agent changer
+* raw strings
+* dropdown for various version
+2FA
+Account-less syncing
+* maybe send a magic link from a state in time
+* version controlling builtin, or continuously updating
+
+How to structure RozeLynx extension? already quite crowded.

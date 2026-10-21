@@ -1873,6 +1873,12 @@ PWAMOZ
 		cp "${FILESDIR}/rozelynx/cpp/download-handoff/rozelynx-handoff.js" \
 			"${FILESDIR}/rozelynx/cpp/download-handoff/rozelynx-handoff.inc.xhtml" \
 			"${S}/browser/components/preferences/" || die
+		# jar.mn registration as a context-free sed: the anchor's position
+		# differs between patch orders and a diff hunk is not robust here.
+		sed -i \
+			-e '/content\/browser\/preferences\/main.js/a\   content/browser/preferences/rozelynx-handoff.js' \
+			-e '/content\/browser\/preferences\/main.js/a\   content/browser/preferences/rozelynx-handoff.inc.xhtml' \
+			"${S}/browser/components/preferences/jar.mn" || die
 	fi
 
 	# --- RozeLynx sync: the rozelynxsync:// magic-link scheme handler ---
