@@ -1,0 +1,38 @@
+[
+  {
+    "namespace": "rozelynxHandoff",
+    "functions": [
+      {
+        "name": "respond",
+        "type": "function",
+        "async": true,
+        "description": "Answer an ext: handler request delivered through onHandoffRequest (the browser-side hand-off engine is spinning, bounded, waiting for this). Respond as soon as the target extension acknowledged or declined.",
+        "parameters": [
+          { "name": "requestId", "type": "integer" },
+          { "name": "accepted", "type": "boolean" },
+          { "name": "error", "type": "string" }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "name": "onHandoffRequest",
+        "type": "function",
+        "description": "Fired when the browser-side hand-off engine (Settings > General > Download hand-off) reaches an ext:<id> handler and asks this relay to deliver the download message to that extension. The relay must answer with respond() - the engine's wait is bounded and a missing answer declines the download.",
+        "parameters": [
+          {
+            "name": "info",
+            "type": "object",
+            "properties": {
+              "requestId": { "type": "integer" },
+              "extId": { "type": "string" },
+              "url": { "type": "string" },
+              "filename": { "type": "string" },
+              "referer": { "type": "string" }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

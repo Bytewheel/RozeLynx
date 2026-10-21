@@ -1,0 +1,27 @@
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "nsISupports.idl"
+
+/**
+ * The parked-link slot of the rozelynxsync: protocol handler
+ * (USE=sync), implemented by RozeLynxSyncProtocolHandler.
+ *
+ * A magic link that arrives on the COMMAND LINE (another app asked the OS
+ * to open it) can reach the handler during startup, BEFORE the extension
+ * that performs the restore has started - the observer notification would
+ * reach nobody and the link would be lost. The handler parks the last
+ * trusted link in a one-slot buffer instead, and the extension's sync
+ * experiment API drains it when it comes up.
+ */
+[scriptable, builtinclass, uuid(9a4f2c8b-5e31-4d07-8f6a-1c3b7d9e5a24)]
+interface nsIRozeLynxSyncLink : nsISupports
+{
+  /**
+   * Return the last parked magic-link URL and clear the slot ("" when
+   * nothing is parked). Called once, at the sync experiment API's load.
+   */
+  AUTF8String consumePendingLink();
+};

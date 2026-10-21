@@ -40,6 +40,15 @@
             "items": { "type": "string" }
           }
         ]
+      },
+      {
+        "name": "getPrefsByPrefix",
+        "type": "function",
+        "async": true,
+        "description": "Read every USER-SET preference whose name starts with the given prefix, as [{name, type, value}]. Defaults are not returned; used by the state sync to carry the whole rozelynx.* configuration without a hand-maintained name list.",
+        "parameters": [
+          { "name": "prefix", "type": "string" }
+        ]
       }
     ]
   }

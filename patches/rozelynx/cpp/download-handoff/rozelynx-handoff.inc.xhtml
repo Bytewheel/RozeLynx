@@ -1,0 +1,51 @@
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<!--
+  RozeLynx download hand-off (USE=download-handoff): the General-pane
+  section for the browser-side engine (uriloader/exthandler/
+  rozelynx-handoff/, nsIRozeLynxHandoff). The same prefs the old extension
+  module wrote, edited where downloads live: the handler rows, the mode
+  and the probe states, with about:config always the source of truth.
+
+  Owned by rozelynx-handoff.js. A build without USE=download-handoff has
+  neither the service nor this file, so the section appears only when the
+  engine exists.
+-->
+<script src="chrome://browser/content/preferences/rozelynx-handoff.js"/>
+
+<groupbox id="rozelynxHandoffGroup" data-category="paneGeneral" hidden="true">
+  <label><html:h2 data-l10n-id="rozelynx-handoff-header"/></label>
+  <html:p class="description-deemphasized"
+         data-l10n-id="rozelynx-handoff-description"/>
+
+  <hbox align="center" flex="1">
+    <html:label for="rozelynx-handoff-mode"
+                data-l10n-id="rozelynx-handoff-mode-label"/>
+    <html:select id="rozelynx-handoff-mode">
+      <html:option value="auto" data-l10n-id="rozelynx-handoff-mode-auto"/>
+      <html:option value="true" data-l10n-id="rozelynx-handoff-mode-always"/>
+      <html:option value="false" data-l10n-id="rozelynx-handoff-mode-never"/>
+    </html:select>
+  </hbox>
+
+  <vbox id="rozelynx-handoff-list"/>
+  <html:p id="rozelynx-handoff-empty" class="description-deemphasized"
+          hidden="true"
+          data-l10n-id="rozelynx-handoff-empty"/>
+
+  <hbox align="center" flex="1" style="margin-top: 6px;">
+    <html:input id="rozelynx-handoff-new-id" type="text" spellcheck="false"
+                placeholder="cmd:aria2c"
+                data-l10n-attrs="placeholder"
+                data-l10n-id="rozelynx-handoff-new-id"/>
+    <button id="rozelynx-handoff-add-btn" is="highlightable-button"
+            data-l10n-id="rozelynx-handoff-add-btn"/>
+  </hbox>
+
+  <html:p id="rozelynx-handoff-status" class="description-deemphasized"/>
+
+  <html:p class="description-deemphasized"
+         data-l10n-id="rozelynx-handoff-hint"/>
+</groupbox>

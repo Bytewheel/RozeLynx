@@ -1,0 +1,85 @@
+--- a/uriloader/exthandler/nsExternalHelperAppService.cpp
++++ b/uriloader/exthandler/nsExternalHelperAppService.cpp
+@@ -26,6 +26,10 @@
+ 
+ #include "ExternalHelperAppParent.h"
+ #include "nsExternalHelperAppService.h"
++#include "mozilla/RozeLynxHandoff.h"
++#include "nsIHttpChannel.h"
++#include "nsILoadInfo.h"
++#include "nsIReferrerInfo.h"
+ #include "nsCExternalHandlerService.h"
+ #include "nsIURI.h"
+ #include "nsIURL.h"
+@@ -1753,6 +1754,68 @@
+     return NS_OK;
+   }
+ 
++  // RozeLynx download hand-off (USE=download-handoff): ask the hand-off
++  // service BEFORE any temp file is created and before any save UI is
++  // built.  The gate is parent-process only (the helper app decision lives
++  // here), skips private downloads (a private download handed to an
++  // external manager would land on disk outside the private session), and
++  // the ORDER is the point: shouldTakeDownload + takeDownload run
++  // synchronously here, and only when a handler ACCEPTS the download is
++  // the request cancelled - a declined hand-off falls through to the
++  // browser's own flow below with nothing lost, which is the property the
++  // old extension implementation could not have (it had to cancel first
++  // and lost the download whenever every handler declined).
++  {
++    nsCOMPtr<nsIChannel> handoffChannel = do_QueryInterface(request);
++    bool isPrivate = false;
++    nsAutoCString urlSpec;
++    if (mSourceUrl) {
++      mSourceUrl->GetSpec(urlSpec);
++    }
++    nsAutoCString handlerId;
++    if (handoffChannel && urlSpec.Length() && !XRE_IsContentProcess()) {
++      nsCOMPtr<nsILoadInfo> loadInfo = handoffChannel->LoadInfo();
++      if (loadInfo) {
++        isPrivate =
++            loadInfo->GetOriginAttributes().mPrivateBrowsingId != 0;
++      }
++      bool handoffTakes = false;
++      nsCOMPtr<nsIRozeLynxHandoff> handoff =
++          do_GetService("@bytewheel.org/handoff;1");
++      if (handoff && !isPrivate &&
++          NS_SUCCEEDED(handoff->ShouldTakeDownload(
++              urlSpec, mContentLength, handlerId, &handoffTakes)) &&
++          handoffTakes && handlerId.Length()) {
++        // The filename suggestion is what the manager will default to, not
++        // a path we chose; the referer comes from the http channel's
++        // referrer info (the load info no longer carries it).
++        nsAutoCString refererSpec;
++        nsCOMPtr<nsIHttpChannel> httpChannel =
++            do_QueryInterface(request);
++        if (httpChannel) {
++          nsCOMPtr<nsIReferrerInfo> referrerInfo =
++              httpChannel->GetReferrerInfo();
++          if (referrerInfo) {
++            nsCOMPtr<nsIURI> referrer;
++            referrerInfo->GetOriginalReferrer(getter_AddRefs(referrer));
++            if (referrer) {
++              referrer->GetSpec(refererSpec);
++            }
++          }
++        }
++        NS_ConvertUTF16toUTF8 filename(mSuggestedFileName);
++        nsAutoCString tookVia;
++        handoff->TakeDownload(urlSpec, filename, refererSpec,
++                              mContentLength, mSourceUrl, handoffChannel,
++                              tookVia);
++        if (tookVia.Length()) {
++          mCanceled = true;
++          request->Cancel(NS_ERROR_ABORT);
++          return NS_OK;
++        }
++        // No handler accepted: fall through to the browser's own flow -
++        // nothing was cancelled, so nothing needs restoring.
++      }
++    }
++  }
++
+   rv = SetUpTempFile(aChannel);
+   if (NS_FAILED(rv)) {
+     nsresult transferError = rv;

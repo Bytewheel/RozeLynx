@@ -18,7 +18,7 @@ Lynxes are stronger and more dangerous than foxes. RozeLynx is beautiful, but sh
 <em>RozeLynx in action — <a href="https://www.instagram.com/reel/DeSi2y-unz7/">watch the demo reel</a> (sound on!).</em>
 </p>
 
-RozeLynx adds enhanced PWA support, modern download handoff support (well, sort of. Tested with uGet. Testers/PRs welcome!), per-tab network interface binding (no more redoing VPN split tunnel clients — you can set profile defaults for interfaces and switch per tab on the fly), and PAM passkeys: local WebAuthn passkeys whose user verification runs through PAM — howdy face recognition first where the system stack carries `pam_howdy.so`, the account password prompt as fallback. USB/NFC security keys keep working through the same prompt. PLEASE BE CAREFUL. We made great pains preventing leaks, using DNS over HTTPS (DoH), but it is advised to treat this as alpha-stage software. We recommend users to run leak checks with tcpdump or Wireshark, before doing anything sensitive.
+RozeLynx adds enhanced PWA support, download handoff (browser-side engine, edited from Settings > General; tested with uGet — testers/PRs welcome!), a user agent switcher with per-URL rules, account-less state sync via self-contained rozelynxsync:// magic links, the RozeLynx 2FA extension (TOTP/HOTP vault), per-tab network interface binding (no more redoing VPN split tunnel clients — you can set profile defaults for interfaces and switch per tab on the fly), and PAM passkeys: local WebAuthn passkeys whose user verification runs through PAM — howdy face recognition first where the system stack carries `pam_howdy.so`, the account password prompt as fallback. USB/NFC security keys keep working through the same prompt. PLEASE BE CAREFUL. We made great pains preventing leaks, using DNS over HTTPS (DoH), but it is advised to treat this as alpha-stage software. We recommend users to run leak checks with tcpdump or Wireshark, before doing anything sensitive.
 
 Linux only, for now. PRs welcome.
 
@@ -153,8 +153,14 @@ in the overlay for the full list). The RozeLynx set:
 ```
 rozelynx chrome-web-store experiments external-browser i18n
 mouse-gestures qr-code pwa lepton-skin ip-protection net-iface
-pam-passkeys download-handoff
+pam-passkeys download-handoff user-agent sync twofa
 ```
+
+`download-handoff` is browser code (Settings > General > Download
+hand-off); `user-agent` adds the user agent switcher (global presets +
+per-URL rules); `sync` adds the rozelynxsync:// state-sync magic link;
+`twofa` installs the separate RozeLynx 2FA extension (passphrase-
+encrypted TOTP/HOTP vault).
 
 plus the LibreWolf-style privacy hardening set (`remove-safebrowsing`,
 `remove-pocket`, `remove-password-manager`, `librewolf-ui`,

@@ -11,6 +11,9 @@
     'pwa': { name: 'PWA', desc: 'Install sites as Progressive Web Apps' },
     'lepton-skin': { name: 'Lepton Skin', desc: 'Compact purple-accented UI theme' },
     'ip-protection': { name: 'IP Protection', desc: 'Applies privacy prefs instantly, like about:config - no restart needed' },
+    'net-iface': { name: 'Network Interfaces', desc: 'Per-tab / per-URL interface binding; rules below' },
+    'user-agent': { name: 'User Agent', desc: 'Preset/raw user agent switcher with per-URL rules; rules below' },
+    'sync': { name: 'State Sync', desc: 'Magic-link backup/restore of tabs, history, cookies, extensions and configuration' },
   };
 
   var statusEl = document.getElementById('status');
@@ -184,7 +187,7 @@
       }
 
       if (loadedOk) {
-        // Healthy background: a sub-9 count just means the user disabled
+        // Healthy background: a low count just means the user disabled
         // some settings - not an error.
         setStatus('All features loaded. ' + enabledCount + ' of ' +
           featureEntries.length + ' features enabled.', false);
@@ -202,5 +205,463 @@
     }
   }
 
+  // ── the full rule lists ───────────────────────────────────────────
+  // The settings page is where the LISTS live (the popup body shows only
+  // the compact controls and opens the modal for the same list). Each
+  // editor here talks to the same storage the modal does: the netiface
+  // experiment API directly, and the user-agent module by message.
+
+  function ask(action, extra) {
+    var msg = { action: action };
+    if (extra) {
+      Object.keys(extra).forEach(function(k) { msg[k] = extra[k]; });
+    }
+    return browser.runtime.sendMessage(msg);
+  }
+
+  function optionEl(value, label, selected) {
+    var o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    o.selected = !!selected;
+    return o;
+  }
+
+  function showEdStatus(el, msg, isError) {
+    if (el) {
+      el.textContent = msg || '';
+      el.classList.toggle('error', !!isError);
+    }
+  }
+
+  // ── netiface rules editor ──────────────────────────────────────────
+
+  function initNetifaceEditor() {
+    var svc = (typeof browser !== 'undefined' && browser.rozelynxNetIface) || null;
+    if (!svc || !svc.getUrlRules || !svc.setUrlRules) {
+      return;  // a build without USE=net-iface: no section at all
+    }
+    var heading = document.getElementById('netiface-rules-heading');
+    var card = document.getElementById('netiface-rules-card');
+    var master = document.getElementById('opt-netiface-enabled');
+    var list = document.getElementById('opt-netiface-list');
+    var empty = document.getElementById('opt-netiface-empty');
+    var newPattern = document.getElementById('opt-netiface-new-pattern');
+    var newIface = document.getElementById('opt-netiface-new-iface');
+    var addBtn = document.getElementById('opt-netiface-add');
+    var status = document.getElementById('opt-netiface-status');
+
+    var rules = [];
+    var interfaces = [];
+
+    heading.hidden = false;
+    card.classList.remove('card-hidden');
+
+    function loadInterfaces() {
+      return Promise.resolve(svc.getInterfaces ? svc.getInterfaces() : [])
+        .then(function(list) {
+          interfaces = (list || []).filter(function(i) { return i && i.name; });
+        })
+        .catch(function() { interfaces = []; });
+    }
+
+    function fillIfaceSelect(sel, selected) {
+      sel.textContent = '';
+      sel.appendChild(optionEl('', '(default routing)', !selected));
+      interfaces.forEach(function(ifc) {
+        sel.appendChild(optionEl(ifc.name, ifc.displayName || ifc.name,
+          ifc.name === selected));
+      });
+      if (selected && !interfaces.some(function(ifc) { return ifc.name === selected; })) {
+        sel.appendChild(optionEl(selected, selected + ' (not available)', true));
+      }
+    }
+
+    function schemaRule(r) {
+      r = r || {};
+      return {
+        pattern: r.pattern || '',
+        iface: r.iface == null ? '' : String(r.iface),
+        enabled: r.enabled !== false,
+      };
+    }
+
+    function write(next) {
+      return Promise.resolve(svc.setUrlRules(next)).then(function(res) {
+        res = res || {};
+        if (Array.isArray(res.rules)) rules = res.rules;
+        if (typeof res.enabled === 'boolean') master.checked = res.enabled;
+        render();
+        if (res.ok === false) {
+          showEdStatus(status, res.error || 'Could not save the rules.', true);
+        } else {
+          showEdStatus(status, '');
+        }
+        return Promise.resolve(
+          browser.runtime.sendMessage({ action: 'netiface:refresh' })
+        ).catch(function() {});
+      }).catch(function(e) {
+        showEdStatus(status, 'Could not save the rules: ' +
+          ((e && e.message) || e), true);
+      });
+    }
+
+    function render() {
+      fillIfaceSelect(newIface, newIface.value || '');
+      list.textContent = '';
+      empty.hidden = rules.length > 0;
+      rules.forEach(function(rule, i) {
+        var row = document.createElement('div');
+        row.className = 'row';
+
+        var pattern = document.createElement('input');
+        pattern.type = 'text';
+        pattern.value = rule.pattern || '';
+        pattern.spellcheck = false;
+        pattern.addEventListener('change', function() {
+          var value = pattern.value.trim();
+          if (value === (rules[i].pattern || '')) return;
+          var next = rules.map(schemaRule);
+          if (!value) next.splice(i, 1);
+          else next[i].pattern = value;
+          write(next);
+        });
+        row.appendChild(pattern);
+
+        var sel = document.createElement('select');
+        fillIfaceSelect(sel, rule.iface || '');
+        sel.addEventListener('change', function() {
+          var next = rules.map(schemaRule);
+          next[i].iface = sel.value;
+          write(next);
+        });
+        row.appendChild(sel);
+
+        var enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.checked = rule.enabled !== false;
+        enabled.title = 'Enable this rule';
+        enabled.addEventListener('change', function() {
+          var next = rules.map(schemaRule);
+          next[i].enabled = enabled.checked;
+          write(next);
+        });
+        row.appendChild(enabled);
+
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = 'X';
+        del.title = 'Delete this rule';
+        del.addEventListener('click', function() {
+          var next = rules.map(schemaRule);
+          next.splice(i, 1);
+          write(next);
+        });
+        row.appendChild(del);
+
+        list.appendChild(row);
+      });
+    }
+
+    addBtn.addEventListener('click', function() {
+      var value = newPattern.value.trim();
+      if (!value) {
+        showEdStatus(status, 'Enter a pattern first.', true);
+        return;
+      }
+      var next = rules.map(schemaRule);
+      next.push({ pattern: value, iface: newIface.value || '', enabled: true });
+      newPattern.value = '';
+      write(next);
+    });
+    newPattern.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addBtn.click();
+      }
+    });
+
+    master.addEventListener('change', function() {
+      var wanted = master.checked;
+      Promise.resolve(svc.setUrlRulesEnabled(wanted)).then(function(res) {
+        master.checked = !!(res && res.enabled);
+        showEdStatus(status, res && res.ok === false
+          ? (res.error || 'Could not change the master switch.')
+          : '');
+      }).catch(function(e) {
+        master.checked = !wanted;
+        showEdStatus(status, 'Could not change the master switch: ' +
+          ((e && e.message) || e), true);
+      });
+    });
+
+    Promise.resolve(svc.getUrlRules()).then(function(state) {
+      state = state || {};
+      rules = Array.isArray(state.rules) ? state.rules : [];
+      master.checked = state.enabled !== false;
+      return loadInterfaces();
+    }).then(render).catch(function(e) {
+      showEdStatus(status, 'Could not read the URL rules: ' +
+        ((e && e.message) || e), true);
+    });
+  }
+
+  // ── user agent editor ─────────────────────────────────────────────
+
+  function initUaEditor() {
+    var CUSTOM_VALUE = '__custom__';
+    var heading = document.getElementById('ua-rules-heading');
+    var card = document.getElementById('ua-rules-card');
+    var presetSelect = document.getElementById('opt-ua-preset');
+    var globalRaw = document.getElementById('opt-ua-global-raw');
+    var master = document.getElementById('opt-ua-enabled');
+    var list = document.getElementById('opt-ua-list');
+    var empty = document.getElementById('opt-ua-empty');
+    var newPattern = document.getElementById('opt-ua-new-pattern');
+    var newUa = document.getElementById('opt-ua-new-ua');
+    var addBtn = document.getElementById('opt-ua-add');
+    var status = document.getElementById('opt-ua-status');
+
+    var state = { global: '', enabled: true, rules: [] };
+
+    function present() {
+      return ask('user-agent:present').then(function(res) {
+        return !!(res && res.ok);
+      }).catch(function() { return false; });
+    }
+
+    function presetLabel(ua) {
+      return (globalThis.RozeLynxUAPresets &&
+              globalThis.RozeLynxUAPresets.labelFor(ua)) || null;
+    }
+
+    function fillUaSelect(sel, selectedUa, withDefault) {
+      sel.textContent = '';
+      var presets = (globalThis.RozeLynxUAPresets &&
+                      globalThis.RozeLynxUAPresets.presets) || [];
+      if (withDefault) {
+        var d = document.createElement('option');
+        d.value = '';
+        d.textContent = 'Default (no override)';
+        if (!selectedUa) d.selected = true;
+        sel.appendChild(d);
+      }
+      globalThis.RozeLynxUAPresets.groups.forEach(function(group) {
+        var og = document.createElement('optgroup');
+        og.label = group;
+        presets.forEach(function(p) {
+          if (p.group !== group) return;
+          var o = document.createElement('option');
+          o.value = p.ua;
+          o.textContent = p.label;
+          o.title = p.ua;
+          if (p.ua === selectedUa) o.selected = true;
+          og.appendChild(o);
+        });
+        sel.appendChild(og);
+      });
+      var c = document.createElement('option');
+      c.value = CUSTOM_VALUE;
+      c.textContent = 'Custom\u2026 (raw string)';
+      if (selectedUa && !presetLabel(selectedUa)) c.selected = true;
+      sel.appendChild(c);
+    }
+
+    function readState() {
+      return ask('user-agent:get-state').then(function(res) {
+        if (!res || res.ok !== true) {
+          throw new Error((res && res.error) || 'the module did not answer');
+        }
+        state.global = res.global || '';
+        state.enabled = res.enabled !== false;
+        state.rules = Array.isArray(res.rules) ? res.rules : [];
+        master.checked = state.enabled;
+        fillUaSelect(presetSelect, state.global, true);
+        var custom = presetSelect.value === CUSTOM_VALUE;
+        globalRaw.style.display = custom ? 'block' : 'none';
+        if (custom) globalRaw.value = state.global;
+        fillUaSelect(newUa, '', false);
+        render();
+      });
+    }
+
+    function writeRules(next) {
+      return ask('user-agent:set-rules', { rules: next })
+        .then(function(res) {
+          if (res && res.ok !== true) {
+            showEdStatus(status, (res && res.error) || 'Could not save the rules.', true);
+          } else {
+            showEdStatus(status, '');
+          }
+          return readState();
+        })
+        .catch(function(e) {
+          showEdStatus(status, 'Could not save the rules: ' +
+            ((e && e.message) || e), true);
+        });
+    }
+
+    function schemaRule(r) {
+      r = r || {};
+      return {
+        pattern: r.pattern || '',
+        ua: r.ua == null ? '' : String(r.ua),
+        enabled: r.enabled !== false,
+      };
+    }
+
+    function render() {
+      list.textContent = '';
+      empty.hidden = state.rules.length > 0;
+      state.rules.forEach(function(rule, i) {
+        var row = document.createElement('div');
+        row.className = 'row';
+
+        var pattern = document.createElement('input');
+        pattern.type = 'text';
+        pattern.value = rule.pattern || '';
+        pattern.spellcheck = false;
+        pattern.addEventListener('change', function() {
+          var value = pattern.value.trim();
+          if (value === (state.rules[i].pattern || '')) return;
+          var next = state.rules.map(schemaRule);
+          if (!value) next.splice(i, 1);
+          else next[i].pattern = value;
+          writeRules(next);
+        });
+        row.appendChild(pattern);
+
+        var sel = document.createElement('select');
+        fillUaSelect(sel, rule.ua, false);
+        sel.addEventListener('change', function() {
+          if (sel.value === CUSTOM_VALUE) {
+            showEdStatus(status, 'Type the custom string in the global ' +
+              'raw box, apply it, then pick "Custom" here to reuse it.', false);
+            return;
+          }
+          var next = state.rules.map(schemaRule);
+          next[i].ua = sel.value;
+          writeRules(next);
+        });
+        row.appendChild(sel);
+
+        var enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.checked = rule.enabled !== false;
+        enabled.title = 'Enable this rule';
+        enabled.addEventListener('change', function() {
+          var next = state.rules.map(schemaRule);
+          next[i].enabled = enabled.checked;
+          writeRules(next);
+        });
+        row.appendChild(enabled);
+
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = 'X';
+        del.title = 'Delete this rule';
+        del.addEventListener('click', function() {
+          var next = state.rules.map(schemaRule);
+          next.splice(i, 1);
+          writeRules(next);
+        });
+        row.appendChild(del);
+
+        list.appendChild(row);
+      });
+    }
+
+    presetSelect.addEventListener('change', function() {
+      if (presetSelect.value === CUSTOM_VALUE) {
+        globalRaw.style.display = 'block';
+        globalRaw.value = state.global && !presetLabel(state.global)
+          ? state.global : '';
+        globalRaw.focus();
+        return;
+      }
+      globalRaw.style.display = 'none';
+      ask('user-agent:set-global', { ua: presetSelect.value })
+        .then(readState)
+        .catch(function(e) {
+          showEdStatus(status, 'Could not save the user agent: ' +
+            ((e && e.message) || e), true);
+        });
+    });
+
+    globalRaw.addEventListener('change', function() {
+      ask('user-agent:set-global', { ua: globalRaw.value.trim() })
+        .then(readState)
+        .catch(function(e) {
+          showEdStatus(status, 'Could not save the user agent: ' +
+            ((e && e.message) || e), true);
+        });
+    });
+
+    master.addEventListener('change', function() {
+      ask('user-agent:set-rules-enabled', { enabled: master.checked })
+        .then(function(res) {
+          if (res && res.ok === true) {
+            state.enabled = res.enabled !== false;
+            master.checked = state.enabled;
+            showEdStatus(status, '');
+          } else {
+            showEdStatus(status, (res && res.error) ||
+              'Could not change the master switch.', true);
+          }
+        })
+        .catch(function(e) {
+          showEdStatus(status, 'Could not change the master switch: ' +
+            ((e && e.message) || e), true);
+        });
+    });
+
+    addBtn.addEventListener('click', function() {
+      var value = newPattern.value.trim();
+      if (!value) {
+        showEdStatus(status, 'Enter a pattern first.', true);
+        return;
+      }
+      var ua = newUa.value === CUSTOM_VALUE
+        ? globalRaw.value.trim() : newUa.value;
+      if (!ua) {
+        showEdStatus(status, 'Pick a user agent for the rule first.', true);
+        return;
+      }
+      var next = state.rules.map(schemaRule);
+      next.push({ pattern: value, ua: ua, enabled: true });
+      newPattern.value = '';
+      writeRules(next);
+    });
+    newPattern.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addBtn.click();
+      }
+    });
+
+    // presets.js first (a static tag would 404 on a build without the
+    // user-agent module), then the module check, then the editor.
+    var script = document.createElement('script');
+    script.src = '../modules/user-agent/presets.js';
+    script.onload = function() {
+      present().then(function(isThere) {
+        if (!isThere) return;  // a build without USE=user-agent
+        heading.hidden = false;
+        card.classList.remove('card-hidden');
+        return readState();
+      }).catch(function() {});
+    };
+    script.onerror = function() {
+      globalThis.RozeLynxUAPresets = {
+        presets: [], groups: [],
+        labelFor: function() { return null; },
+      };
+      script.onload();
+    };
+    document.head.appendChild(script);
+  }
+
   loadFeatures();
+  initNetifaceEditor();
+  initUaEditor();
 })();

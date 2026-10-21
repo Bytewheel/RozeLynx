@@ -106,10 +106,21 @@ IUSE+=" language-packs xdg-profile newtab-fixes"
 #                    serve is forwarded to them)
 # download-handoff:  Hand downloads off to a configured download manager
 #                     (any extension that answers, any program on PATH, or
-#                     the built-in uGet integrator) before the save UI
+#                     the built-in uGet integrator) before the save UI.
+#                     BROWSER CODE since 158.0.3: the engine and the
+#                     Settings > General editor live in
+#                     uriloader/exthandler/rozelynx-handoff/, and the
+#                     extension carries only the ext:<id> relay module
+# user-agent:        User agent switcher: preset/raw global override and
+#                     per-URL rules (extension popup + options page)
+# sync:              Account-less state sync: the rozelynxsync:// magic
+#                     link scheme (browser engine) + the extension's
+#                     gather/encrypt/restore module
+# twofa:             RozeLynx 2FA: the separate two-factor extension
+#                     (TOTP/HOTP vault, otpauth:// capture, page autofill)
 IUSE+=" rozelynx rozelynx-debug chrome-web-store experiments external-browser"
 IUSE+=" i18n mouse-gestures qr-code pwa lepton-skin ip-protection net-iface"
-IUSE+=" download-handoff pam-passkeys"
+IUSE+=" download-handoff user-agent sync twofa pam-passkeys"
 
 REQUIRED_USE="|| ( X wayland )
 	debug? ( !system-av1 )
@@ -129,6 +140,9 @@ REQUIRED_USE="|| ( X wayland )
  	net-iface? ( rozelynx )
 	pam-passkeys? ( rozelynx )
 	download-handoff? ( rozelynx )
+	user-agent? ( rozelynx )
+	sync? ( rozelynx )
+	twofa? ( rozelynx )
  "
 
 RESTRICT="!test? ( test )"
@@ -399,7 +413,12 @@ rozelynx_enabled_modules() {
 	use lepton-skin && modules+=( "lepton-skin" )
   use ip-protection && modules+=( "ip-protection" )
   use net-iface && modules+=( "net-iface" )
-  use download-handoff && modules+=( "download-handoff" )
+  # The hand-off ENGINE is browser code (the download-handoff flag wires
+  # the C++ module in src_prepare below); the extension module is the
+  # ext:<id> relay that delivers download messages to other extensions.
+  use download-handoff && modules+=( "handoff-relay" )
+  use user-agent && modules+=( "user-agent" )
+  use sync && modules+=( "sync" )
   echo "${modules[@]}"
 }
 
@@ -1837,6 +1856,40 @@ PWAMOZ
 		fi
 	fi
 
+	# --- RozeLynx download-handoff: the browser-side hand-off engine ---
+	# The engine, the interception gate in nsExternalHelperAppService::
+	# OnStartRequest and the Settings > General editor. OnStartRequest asks
+	# the engine BEFORE any save UI exists and only cancels when a handler
+	# ACCEPTS - a declined hand-off falls through to the browser's own
+	# flow with nothing lost.
+	if use download-handoff; then
+		einfo "Applying RozeLynx download hand-off engine..."
+		mkdir -p "${S}/uriloader/exthandler/rozelynx-handoff" || die
+		cp "${FILESDIR}/rozelynx/cpp/download-handoff/"*.cpp 			"${FILESDIR}/rozelynx/cpp/download-handoff/"*.h 			"${FILESDIR}/rozelynx/cpp/download-handoff/"*.idl 			"${FILESDIR}/rozelynx/cpp/download-handoff/"*.conf 			"${FILESDIR}/rozelynx/cpp/download-handoff/moz.build" 			"${S}/uriloader/exthandler/rozelynx-handoff/" || die
+		sed -i '/"exthandler",/a\    "exthandler/rozelynx-handoff",' \
+			"${S}/uriloader/moz.build" || die
+		eapply "${FILESDIR}/rozelynx/cpp/download-handoff/handoff-exthandler.patch" || die
+		eapply "${FILESDIR}/rozelynx/cpp/download-handoff/handoff-prefs-general.patch" || die
+		cp "${FILESDIR}/rozelynx/cpp/download-handoff/rozelynx-handoff.js" \
+			"${FILESDIR}/rozelynx/cpp/download-handoff/rozelynx-handoff.inc.xhtml" \
+			"${S}/browser/components/preferences/" || die
+	fi
+
+	# --- RozeLynx sync: the rozelynxsync:// magic-link scheme handler ---
+	# Registered only for trusted principals (URL bar, command line,
+	# extension pages); web content cannot drive a state restore.
+	if use sync; then
+		einfo "Applying RozeLynx sync magic-link scheme..."
+		mkdir -p "${S}/netwerk/base/rozelynx-sync" || die
+		cp "${FILESDIR}/rozelynx/cpp/sync-scheme/"*.cpp \
+			"${FILESDIR}/rozelynx/cpp/sync-scheme/"*.h \
+			"${FILESDIR}/rozelynx/cpp/sync-scheme/"*.conf \
+			"${FILESDIR}/rozelynx/cpp/sync-scheme/moz.build" \
+			"${S}/netwerk/base/rozelynx-sync/" || die
+		sed -i '/"url-classifier",/a\    "base/rozelynx-sync",' \
+			"${S}/netwerk/moz.build" || die
+	fi
+
 	# --- Toolchain compatibility: GCC 16 / libstdc++ 16 <cmath> ---
 	#
 	# dom/media/mediacapabilities/MediaCapabilitiesValidation.cpp:266 calls
@@ -2428,6 +2481,43 @@ with open('${policies_json}', 'w') as f:
 			# verification (signedState NOT_REQUIRED, no banners) is complete.
 		fi
 
+		# --- RozeLynx 2FA: the separate two-factor extension ---
+		# TOTP/HOTP vault (passphrase-encrypted), otpauth:// capture, page
+		# autofill. A whole extension of its own, not a features-module: it
+		# owns secrets and can be installed or removed independently.
+		if use twofa; then
+			einfo "Assembling RozeLynx 2FA extension..."
+			local tfa_src="${FILESDIR}/rozelynx/extension-2fa"
+			local tfa_dest="${T}/rozelynx-2fa-extension"
+			rm -rf "${tfa_dest}"
+			cp -a "${tfa_src}" "${tfa_dest}" || die
+			rm -f "${tfa_dest}/README.md"
+
+			(cd "${tfa_dest}" && zip -qr "${T}/rozelynx-2fa@bytewheel.org.xpi" .) \
+				|| die "failed to create the 2FA XPI"
+			local ext_install_dir="${MOZILLA_FIVE_HOME}/distribution/extensions"
+			insinto "${ext_install_dir}"
+			newins "${T}/rozelynx-2fa@bytewheel.org.xpi" "rozelynx-2fa@bytewheel.org.xpi"
+			einfo "Installed RozeLynx 2FA XPI to ${ext_install_dir}/"
+
+			local policies_json="${ED}${MOZILLA_FIVE_HOME}/distribution/policies.json"
+			if [[ -f "${policies_json}" ]]; then
+				einfo "Registering RozeLynx 2FA in policies.json..."
+				python3 -c "
+import json
+with open('${policies_json}') as f:
+    p = json.load(f)
+es = p['policies'].setdefault('ExtensionSettings', {})
+es['rozelynx-2fa@bytewheel.org'] = {
+    'installation_mode': 'force_installed',
+    'install_url': 'file://${MOZILLA_FIVE_HOME}/distribution/extensions/rozelynx-2fa@bytewheel.org.xpi'
+}
+with open('${policies_json}', 'w') as f:
+    json.dump(p, f, indent=4)
+" || ewarn "Failed to update policies.json for the 2FA extension"
+			fi
+		fi
+
 		# Install Lepton skin browser chrome CSS (reference file for userChrome.css)
 		if use lepton-skin; then
 			einfo "Installing Lepton skin CSS files..."
@@ -2641,6 +2731,14 @@ SSBEOF
 			-e "s:@EXEC@:${exec_command}:" \
 			-e "s:@ICON@:${icon_name}:" \
 			"${WORKDIR}/rozelynx.desktop-template" || die
+		# The OS half of the sync magic-link handoff: clicking a
+		# rozelynxsync:// link in any other app launches RozeLynx with it.
+		# Registered only when the scheme handler is compiled in (use sync).
+		if use sync; then
+			sed -i \
+				-e 's#^MimeType=\(.*\)$#MimeType=\1x-scheme-handler/rozelynxsync;#' \
+				"${WORKDIR}/rozelynx.desktop-template" || die
+		fi
 		newmenu "${WORKDIR}/rozelynx.desktop-template" "${desktop_filename}"
 		rm "${WORKDIR}/rozelynx.desktop-template" || die
 
@@ -2826,6 +2924,10 @@ pkg_postinst() {
 		elog "  net-iface          - Per-tab network interface pinning"
 		elog "  pam-passkeys       - Local passkeys via PAM (howdy / password)"
 		elog "  download-handoff   - Hand downloads to an external manager"
+		elog "                      (Settings > General > Download hand-off)"
+		elog "  user-agent         - User agent switcher (global + per-URL rules)"
+		elog "  sync               - Magic-link state sync (rozelynxsync:)"
+		elog "  twofa              - RozeLynx 2FA extension (TOTP/HOTP vault)"
 		elog ""
 	fi
 

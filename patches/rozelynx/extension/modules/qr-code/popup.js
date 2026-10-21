@@ -3,19 +3,25 @@
   'use strict';
 
   var canvas = document.getElementById('qr-canvas');
-  var loading = document.getElementById('loading');
   var error = document.getElementById('error');
   var urlDisplay = document.getElementById('url-display');
+  var generateBtn = document.getElementById('generate-btn');
   var copyBtn = document.getElementById('copy-btn');
 
+  var currentUrl = '';
+  var currentTitle = '';
+
   function showError(msg) {
-    loading.style.display = 'none';
     error.style.display = 'block';
     error.textContent = msg;
   }
 
+  function clearError() {
+    error.style.display = 'none';
+    error.textContent = '';
+  }
+
   function showQR(dataURL, url) {
-    loading.style.display = 'none';
     canvas.style.display = 'inline';
     urlDisplay.style.display = 'block';
     copyBtn.style.display = 'inline';
@@ -30,24 +36,6 @@
     var shortUrl = url.length > 60 ? url.substring(0, 57) + '...' : url;
     urlDisplay.textContent = shortUrl;
   }
-
-  browser.tabs.query({ active: true, currentWindow: true }).then(function(tabs) {
-    if (!tabs || tabs.length === 0) {
-      showError('No active tab');
-      return;
-    }
-    var url = tabs[0].url;
-    var title = tabs[0].title;
-
-    if (!url || url.startsWith('about:') || url.startsWith('moz-extension:')) {
-      showError('Cannot generate QR code for this page');
-      return;
-    }
-
-    generateQR(url);
-  }).catch(function() {
-    showError('Could not access tab');
-  });
 
   function generateQR(data) {
     if (typeof qrcode === 'undefined') {
@@ -112,15 +100,50 @@
     showQR(dataURL, data);
   }
 
+  // The QR code is generated only when the button is clicked, never on
+  // popup open. The active tab is read up-front (cheap), the encode work
+  // is not.
+  browser.tabs.query({ active: true, currentWindow: true }).then(function(tabs) {
+    if (!tabs || tabs.length === 0) {
+      generateBtn.disabled = true;
+      showError('No active tab');
+      return;
+    }
+    currentUrl = tabs[0].url;
+    currentTitle = tabs[0].title;
+
+    if (!currentUrl || currentUrl.startsWith('about:') ||
+        currentUrl.startsWith('moz-extension:')) {
+      generateBtn.disabled = true;
+      showError('Cannot generate QR code for this page');
+      return;
+    }
+  }).catch(function() {
+    generateBtn.disabled = true;
+    showError('Could not access tab');
+  });
+
+  generateBtn.addEventListener('click', function() {
+    clearError();
+    if (!currentUrl) {
+      showError('Cannot generate QR code for this page');
+      return;
+    }
+    generateBtn.disabled = true;
+    try {
+      generateQR(currentUrl);
+    } finally {
+      generateBtn.disabled = false;
+    }
+  });
+
   copyBtn.addEventListener('click', function() {
-    browser.tabs.query({ active: true, currentWindow: true }).then(function(tabs) {
-      navigator.clipboard.writeText(tabs[0].url).then(function() {
-        copyBtn.textContent = 'Copied!';
-        setTimeout(function() { copyBtn.textContent = 'Copy URL'; }, 1500);
-      }).catch(function() {
-        copyBtn.textContent = 'Copy failed';
-        setTimeout(function() { copyBtn.textContent = 'Copy URL'; }, 1500);
-      });
+    navigator.clipboard.writeText(currentUrl).then(function() {
+      copyBtn.textContent = 'Copied!';
+      setTimeout(function() { copyBtn.textContent = 'Copy URL'; }, 1500);
+    }).catch(function() {
+      copyBtn.textContent = 'Copy failed';
+      setTimeout(function() { copyBtn.textContent = 'Copy URL'; }, 1500);
     });
   });
 
@@ -242,7 +265,7 @@
   // DesktopEntry.reconcile, which otherwise only runs once at start-up.
   //
   // The button is only revealed once the pwa module has actually answered a
-  // message, which is the same guard the urlrules section uses: an extension
+  // message, which is the same guard the rules sections use: an extension
   // page cannot ask "is the API there?", so it asks the thing that would work.
   // A build without USE=pwa has no listener and the message rejects, so the
   // button never appears rather than sitting there failing on click.
@@ -293,52 +316,76 @@
   renderPWAs();
   revealReconcile();
 
-  // Per-URL interface rules editor (modules/netiface/urlrules-ui.js), appended
-  // to this popup as the collapsible section under "Installed Apps".
-  //
-  // Loaded dynamically and only when the netiface experiment API exists: that
-  // module is not in the XPI at all on a build without USE=net-iface, so a
-  // static <script src> tag would log a missing-resource error every time the
-  // popup was opened. The editor's own guard is a second line of defence for an
-  // older extension whose parent API predates the rule functions.
+  // ── dynamic module UI loading ─────────────────────────────────────
+  // Each section's script is loaded only when its module is present in
+  // this build, by asking the thing that would work (the netiface
+  // experiment API, a background message). A static <script> tag would
+  // log a missing-resource error on every popup open for every module
+  // the build does not carry.
+
+  function loadScript(src, onerror) {
+    var script = document.createElement('script');
+    script.src = src;
+    if (onerror) script.onerror = onerror;
+    document.body.appendChild(script);
+  }
+
+  // User agent switcher (modules/user-agent/ua-ui.js): the section markup
+  // is in this popup, between the QR section and the PWA section, and the
+  // script that owns it lives in the user-agent module so it is absent from
+  // a build without USE=user-agent.
+  (function loadUaUI() {
+    if (typeof browser === 'undefined' || !browser.runtime) {
+      return;
+    }
+    browser.runtime.sendMessage({ action: 'user-agent:present' })
+      .then(function(resp) {
+        if (!resp || !resp.ok) return;
+        loadScript('../user-agent/ua-ui.js');
+      })
+      .catch(function() {});
+  })();
+
+  // Per-URL interface rules (modules/netiface/urlrules-ui.js): guarded by
+  // the netiface experiment API's presence, exactly as before - only the
+  // section it renders is now the compact one, with the list in the modal.
   (function loadUrlRulesUI() {
     if (typeof browser === 'undefined' || !browser.rozelynxNetIface) {
       return;
     }
-    var script = document.createElement('script');
-    script.src = '../netiface/urlrules-ui.js';
-    script.onerror = function() {
-      // Nothing to show: the section stays hidden.
-    };
-    document.body.appendChild(script);
+    loadScript('../netiface/urlrules-ui.js');
   })();
 
-  // Download hand-off handler editor
-  // (modules/downloads-handoff/handlers-ui.js), appended as the collapsible
-  // section under the URL-rules one.
-  //
-  // The guard here is a MESSAGE, not an API presence check, and that is a
-  // deliberate difference from the loader above. The netiface editor can ask
-  // "is browser.rozelynxNetIface there?" because the experiment API exists
-  // independently of whether its module was assembled. The hand-off module
-  // has no such marker: it is a background script, so the only honest test is
-  // whether anything answers one of its messages. A rejected sendMessage means
-  // the module is not in this build, and the section stays hidden.
-  (function loadHandoffUI() {
-    if (typeof browser === 'undefined' || !browser.runtime) {
+  // The sync panel (modules/sync/sync-ui.js), opened by the header button.
+  // A build without USE=sync has no module to answer 'sync:present', so
+  // the button explains itself instead of opening a dead panel.
+  var syncBtn = document.getElementById('sync-btn');
+  (function loadSyncUI() {
+    if (typeof browser === 'undefined' || !browser.runtime || !syncBtn) {
       return;
     }
-    browser.runtime.sendMessage({ action: 'downloads-handoff:handlers' })
-      .then(function() {
-        var script = document.createElement('script');
-        script.src = '../downloads-handoff/handlers-ui.js';
-        script.onerror = function() {
-          // Nothing to show: the section stays hidden.
-        };
-        document.body.appendChild(script);
+    browser.runtime.sendMessage({ action: 'sync:present' })
+      .then(function(resp) {
+        if (!resp || !resp.ok) {
+          syncBtn.title = 'The sync module is not in this build';
+          return;
+        }
+        syncBtn.addEventListener('click', function() {
+          var panel = document.getElementById('sync-panel');
+          if (!panel.hidden && panel.dataset.loaded === '1') {
+            panel.hidden = !panel.hidden;
+            return;
+          }
+          panel.hidden = false;
+          if (panel.dataset.loaded === '1') return;
+          loadScript('../sync/sync-ui.js', function() {
+            panel.textContent =
+              'The sync module UI failed to load in this build.';
+          });
+        });
       })
       .catch(function() {
-        // No downloads-handoff module in this build.
+        syncBtn.title = 'The sync module is not in this build';
       });
   })();
 })();

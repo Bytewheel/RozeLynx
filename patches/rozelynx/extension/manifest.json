@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RozeLynx Features",
-  "version": "1.0.76",
+  "version": "1.1.0",
   "description": "Portable features for RozeLynx browser by ByteWheel",
   "author": "ByteWheel",
   "browser_specific_settings": {
@@ -102,6 +102,34 @@
         "paths": [
           [
             "rozelynxSecurity"
+          ]
+        ]
+      }
+    },
+    "rozelynxSync": {
+      "schema": "lib/experiments/sync-schema.json",
+      "parent": {
+        "scopes": [
+          "addon_parent"
+        ],
+        "script": "lib/experiments/sync-api.js",
+        "paths": [
+          [
+            "rozelynxSync"
+          ]
+        ]
+      }
+    },
+    "rozelynxHandoff": {
+      "schema": "lib/experiments/handoff-schema.json",
+      "parent": {
+        "scopes": [
+          "addon_parent"
+        ],
+        "script": "lib/experiments/handoff-api.js",
+        "paths": [
+          [
+            "rozelynxHandoff"
           ]
         ]
       }

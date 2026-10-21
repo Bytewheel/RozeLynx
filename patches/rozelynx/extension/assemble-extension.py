@@ -168,31 +168,50 @@ AVAILABLE_FEATURES = {
         'background_script': 'modules/netiface/background.js',
         'permissions': ['contextMenus', 'storage', 'tabs'],
     },
-    'download-handoff': {
-        'module': 'downloads-handoff',
-        'description': 'Hand downloads off to a configured download manager '
-                       'before the browser prompts',
-        # handlers-ui.js is the popup's collapsible handler list, appended to
-        # the qr-code popup the same way the netiface editor is; it lives here
-        # so the whole feature can move to its own popup without untangling
-        # qr-code, and so a build without this module has no trace of it (the
-        # popup asks the background whether the module exists before loading
-        # the script - see loadHandoffUI in modules/qr-code/popup.js).
-        'files': ['background.js', 'content.js', 'handlers-ui.js'],
-        'background_script': 'modules/downloads-handoff/background.js',
-        # cookies is the one the base manifest does not already hold: the
-        # hand-off carries a Netscape cookie file so an authenticated download
-        # still works once it is the manager's problem instead of the
-        # browser's. Nothing here is specific to one manager - the handler
-        # list is uget, any extension that answers a download message, or any
-        # program on PATH.
-        'permissions': ['downloads', 'cookies', 'contextMenus', 'nativeMessaging'],
+    'user-agent': {
+        'module': 'user-agent',
+        'description': 'User agent switcher: preset/raw global override and per-URL rules',
+        # presets.js is loaded on demand by ua-ui.js (popup) and by the
+        # options page, because a static <script> tag in either would 404 on a
+        # build whose XPI does not carry this module.
+        'files': ['background.js', 'content.js', 'presets.js', 'ua-ui.js'],
+        'background_script': 'modules/user-agent/background.js',
+        # webRequest + webRequestBlocking already live in the base manifest
+        # (the header rewrite is the point of the module).
+        'permissions': [],
         'content_scripts': [{
             'matches': ['*://*/*'],
-            'js': ['modules/downloads-handoff/content.js'],
+            'js': ['modules/user-agent/content.js'],
             'run_at': 'document_start',
             'all_frames': True,
         }],
+    },
+    'sync': {
+        'module': 'sync',
+        'description': 'Account-less state sync via an encrypted magic link',
+        # sync-ui.js is loaded into the qr-code popup by the sync button
+        # itself, after the background answers 'sync:present'; a build
+        # without this module shows a button that says it is not in this
+        # build instead of a dead panel.
+        'files': ['background.js', 'sync-ui.js'],
+        'background_script': 'modules/sync/background.js',
+        # history + cookies are the two permissions the base manifest does
+        # not already hold: the link cannot recreate the browsing state it
+        # claims to carry without them (tabs / management / storage /
+        # alarms are already in the base manifest).
+        'permissions': ['history', 'cookies'],
+    },
+    'handoff-relay': {
+        'module': 'handoff-relay',
+        'description': 'ext: handler delivery for the browser-side download hand-off',
+        # The hand-off ENGINE is browser code (uriloader/exthandler/
+        # rozelynx-handoff/, USE=download-handoff); this module only
+        # forwards download messages to other extensions and keeps the
+        # installed-extensions probe pref current. Ships with the same USE
+        # flag as the engine so the two halves never drift apart.
+        'files': ['background.js'],
+        'background_script': 'modules/handoff-relay/background.js',
+        'permissions': [],
     },
 }
 

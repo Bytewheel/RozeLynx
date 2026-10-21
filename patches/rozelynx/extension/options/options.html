@@ -26,6 +26,7 @@
   }
   body { font-family: -apple-system, sans-serif; max-width: 600px; margin: 20px auto; padding: 0 16px; color: var(--fg); background: var(--bg); }
   h1 { color: #8B5CF6; font-size: 20px; }
+  h2 { font-size: 15px; margin: 22px 0 8px 0; }
   .feature { border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 16px; margin: 8px 0; display: flex; justify-content: space-between; align-items: center; }
   .feature-name { font-weight: 600; }
   .feature-desc { font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
@@ -36,6 +37,24 @@
   .status { font-size: 12px; color: var(--ok); margin-top: 16px; }
   .status.error { color: var(--err); }
   .hint { font-size: 12px; color: var(--fg-muted); margin-top: 4px; }
+  .card { border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 16px; margin: 8px 0; }
+  .card-hidden { display: none; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+  .row input[type="text"] { flex: 1 1 40%; min-width: 0; padding: 4px 6px; border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 12px; background: var(--bg); color: var(--fg); }
+  .row select { flex: 1 1 35%; min-width: 0; padding: 4px 2px; border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 12px; background: var(--bg); color: var(--fg); }
+  .row button { padding: 3px 10px; font-size: 12px; border: none; border-radius: 6px; background: transparent; color: var(--fg-muted); cursor: pointer; }
+  .row button:hover { background: #fee2e2; color: #DC2626; }
+  @media (prefers-color-scheme: dark) { .row button:hover { background: #f38ba8; color: #1e1e2e; } }
+  .row-add { margin-top: 8px; display: flex; gap: 6px; align-items: center; }
+  .row-add input[type="text"] { flex: 1 1 auto; }
+  .row-add button, .master-btn { padding: 5px 12px; font-size: 12px; border: none; border-radius: 6px; background: #8B5CF6; color: #fff; cursor: pointer; }
+  .master { display: flex; align-items: center; gap: 6px; font-size: 12px; padding-bottom: 6px; }
+  .empty { font-size: 12px; color: var(--fg-muted); padding: 4px 0; }
+  .ed-status { font-size: 12px; margin-top: 6px; min-height: 14px; color: var(--fg-muted); word-break: break-word; }
+  .ed-status.error { color: var(--err); }
+  #ua-global-row { display: flex; gap: 6px; align-items: center; padding-bottom: 6px; }
+  #ua-global-row select { flex: 1 1 auto; min-width: 0; }
+  #ua-global-raw { width: 100%; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -44,6 +63,56 @@
 <div id="features"></div>
 <p class="hint" id="lepton-hint" style="display:none;">The Lepton skin toggles userChrome.css (browser chrome) and userContent.css (about: pages) and needs a browser restart to show.</p>
 <p class="hint" id="ip-hint" style="display:none;">Tracking/fingerprinting protection prefs stay ON in both states: the LibreWolf strict content blocking baseline forces them on this build.</p>
+
+<!--
+  The FULL rule lists live here (the extension's settings), not in the
+  popup body: the popup shows only the current-page status, the add-a-rule
+  controls and a button that opens the all-rules modal. Each editor below is
+  the same shape as the modal block - master switch, full row list, add row -
+  talking to the same storage.
+-->
+<h2 id="netiface-rules-heading" hidden>Interface bindings by URL</h2>
+<div class="card card-hidden" id="netiface-rules-card">
+  <label class="master">
+    <input type="checkbox" id="opt-netiface-enabled">
+    <span>Use URL rules for interface binding</span>
+  </label>
+  <div class="empty" id="opt-netiface-empty" hidden>
+    No URL rules. Traffic follows your container and profile defaults.
+  </div>
+  <div id="opt-netiface-list"></div>
+  <div class="row-add">
+    <input type="text" id="opt-netiface-new-pattern" placeholder="*.example.com" spellcheck="false">
+    <select id="opt-netiface-new-iface"></select>
+    <button type="button" id="opt-netiface-add">Add</button>
+  </div>
+  <div class="ed-status" id="opt-netiface-status"></div>
+</div>
+
+<h2 id="ua-rules-heading" hidden>User agent</h2>
+<div class="card card-hidden" id="ua-rules-card">
+  <div class="row" id="ua-global-row">
+    <span style="font-size:12px; color:var(--fg-muted); flex:0 0 auto;">Use</span>
+    <select id="opt-ua-preset"></select>
+  </div>
+  <input type="text" id="opt-ua-global-raw" class="row-add" style="display:none;"
+         placeholder="Raw user agent string" spellcheck="false">
+  <label class="master" style="margin-top:6px;">
+    <input type="checkbox" id="opt-ua-enabled">
+    <span>Use URL rules for the user agent</span>
+  </label>
+  <div class="empty" id="opt-ua-empty" hidden>
+    No URL rules. Pages see the global user agent (or the browser's own).
+  </div>
+  <div id="opt-ua-list"></div>
+  <div class="row-add">
+    <input type="text" id="opt-ua-new-pattern" placeholder="*.example.com" spellcheck="false">
+    <select id="opt-ua-new-ua"></select>
+    <button type="button" id="opt-ua-add">Add</button>
+  </div>
+  <div class="ed-status" id="opt-ua-status"></div>
+</div>
+
 <p class="status" id="status">Loading features...</p>
 <script src="options.js"></script>
 </body>

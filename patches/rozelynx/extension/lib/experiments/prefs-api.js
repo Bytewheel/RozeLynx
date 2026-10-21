@@ -87,6 +87,44 @@ this.rozelynxPrefs = class extends ExtensionAPI {
         },
 
         /**
+         * Read every USER-SET preference whose name starts with a prefix,
+         * as [{name, type, value}]. Only names the user actually changed are
+         * returned (prefHasUserValue), which is what a state-sync wants:
+         * defaults come from the build, not from the link, and shipping a
+         * machine's every pref would carry hardware paths and other
+         * machine-specific noise. The sync module calls this with
+         * "rozelynx." so the whole RozeLynx configuration travels without
+         * a hand-maintained name list to fall out of date with.
+         */
+        async getPrefsByPrefix(prefix) {
+          const out = [];
+          const p = typeof prefix === "string" ? prefix : "";
+          let names = [];
+          try {
+            names = Services.prefs.getChildList(p);
+          } catch (e) {
+            return out;
+          }
+          for (const name of names) {
+            try {
+              if (!Services.prefs.prefHasUserValue(name)) {
+                continue;
+              }
+              const t = Services.prefs.getPrefType(name);
+              if (t === PREF_TYPES.boolean) {
+                out.push({ name, type: "boolean", value: Services.prefs.getBoolPref(name) });
+              } else if (t === PREF_TYPES.string) {
+                out.push({ name, type: "string", value: Services.prefs.getStringPref(name) });
+              } else if (t === PREF_TYPES.integer) {
+                out.push({ name, type: "integer", value: Services.prefs.getIntPref(name) });
+              }
+            } catch (e) {}
+          }
+          out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+          return out;
+        },
+
+        /**
          * Clear user values for a list of preferences.
          *
          * This exists for the indexed-pref lists (the download hand-off

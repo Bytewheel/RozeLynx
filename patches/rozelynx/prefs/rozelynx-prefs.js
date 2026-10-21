@@ -110,13 +110,19 @@ pref("rozelynx.netiface.dnsAttribution", true);
 pref("network.dns.refresh_negative_addr_on_use", true);
 
 // Download hand-off (needs www-client/firefox USE=download-handoff)
-// Hands a download off to a download manager instead of letting the browser
-// download it, so the manager owns the queue, the GUI and the resume data and
-// the browser's save UI never appears. NOTHING HERE IS SPECIFIC TO ONE
-// MANAGER: the handler list below is either `uget` (a builtin - it speaks
-// uget-integrator's own stdio protocol, which is a real integration and not
-// "run a program"), `ext:<extension-id>` (any extension that answers a
-// cross-extension download message) or `cmd:<program>` (any program on PATH).
+// BROWSER CODE since 158.0.3: the engine, the interception gate and the
+// Settings > General editor live in uriloader/exthandler/rozelynx-handoff/
+// (nsIRozeLynxHandoff), not in the extension - the extension only carries
+// the tiny ext:<id> relay module that delivers download messages to other
+// extensions. The prefs are unchanged, so a profile edited under the old
+// extension keeps working. Hands a download off to a download manager
+// before the browser builds any save UI, so the manager owns the queue,
+// the GUI and the resume data. NOTHING HERE IS SPECIFIC TO ONE MANAGER:
+// the handler list below is either `uget` (a builtin - it speaks
+// uget-integrator's own stdio protocol, which is a real integration and
+// not "run a program"), `ext:<extension-id>` (any extension that answers
+// a cross-extension download message - delivered through the relay) or
+// `cmd:<program>` (any program on PATH).
 //
 //   pref("rozelynx.downloads.handoff.enabled", "auto")
 //     "auto" = on when at least one enabled handler is available (the
@@ -126,38 +132,64 @@ pref("network.dns.refresh_negative_addr_on_use", true);
 //     Anything smaller stays with the browser.
 //   pref("rozelynx.downloads.handoff.exclude", "")
 //     Space/comma separated URL substrings that are never intercepted.
-//   pref("rozelynx.downloads.handoff.link_intercept", true)
-//     Whether a click on a file link is intercepted before the browser starts
-//     the download at all (the only way to stop the save UI appearing).
-//   pref("rozelynx.downloads.handoff.link_extensions", "<defaults>")
-//     The file extensions the link hook treats as downloads. A `download`
-//     attribute counts whatever it says, independently of this list.
 //
-// The handler list, edited from the extension popup's collapsible section or
-// here. THE ORDER IS THE PRIORITY: the first handler that accepts a download
-// gets it, and the rest are not tried. n is 0..15, and deleting the last row
-// CLEARS its prefs rather than blanking them, so nothing is left live in
-// about:config that the editor no longer shows.
+// The handler list, edited from Settings > General > Download hand-off or
+// here. THE ORDER IS THE PRIORITY: the first handler that accepts a
+// download gets it, and the rest are not tried. n is 0..15, and deleting
+// the last row CLEARS its prefs rather than blanking them, so nothing is
+// left live in about:config that the editor no longer shows.
 //   pref("rozelynx.downloads.handler.<n>.id", "uget")
 //   pref("rozelynx.downloads.handler.<n>.args", "{url}")
 //     Only a cmd: handler uses args. {url} {filename} {referer} {ua}
 //     {cookies} are substituted per-token, so a url is always one argument
-//     however much whitespace or punctuation it carries. {cookies} expands to
-//     the path of a 0600 file the native host writes in the session runtime
-//     directory, because a manager that wants cookies wants to open a file.
+//     however much whitespace or punctuation it carries. {cookies} expands
+//     to the path of a 0600 file the engine writes under the temp dir,
+//     because a manager that wants cookies wants to open a file.
 //   pref("rozelynx.downloads.handler.<n>.enabled", true)
+//
+//   pref("rozelynx.downloads.handoff.defer_to", "uget-integration@slgobinath")
+//     An add-on ID to stand down for, so another download-manager
+//     integration can own downloads instead. Honoured only when the named
+//     add-on is installed and enabled (the relay's cache answers that).
+//   pref("rozelynx.downloads.handoff.extensions", "{\"<id>\": true}")
+//     Probe cache the extension relay maintains (installed-and-enabled map
+//     for ext: handlers). Do not hand-edit; the relay rewrites it.
 //
 // Handler 0 is the uget builtin so a fresh profile keeps the behaviour this
 // feature shipped with; the list is meant to be edited from there.
 pref("rozelynx.downloads.handoff.enabled", "auto");
 pref("rozelynx.downloads.handoff.min_size", 307200);
 pref("rozelynx.downloads.handoff.exclude", "");
-pref("rozelynx.downloads.handoff.link_intercept", true);
-//   pref("rozelynx.downloads.handoff.defer_to", "uget-integration@slgobinath")
 pref("rozelynx.downloads.handoff.defer_to", "");
 pref("rozelynx.downloads.handler.0.id", "uget");
 pref("rozelynx.downloads.handler.0.args", "");
 pref("rozelynx.downloads.handler.0.enabled", true);
+
+// User agent switcher (needs www-client/firefox USE=user-agent)
+// Two layers, one resolver: a GLOBAL override ("" = the browser's own UA,
+// picked from the preset dropdown or typed raw) and per-URL RULES that
+// match the netiface rule grammar (*.example.com, example.com, *,
+// *://host/path, glob inside labels). The rule layer has its own master
+// switch and is inert until a rule exists. Requests are rewritten through
+// webRequest.onBeforeSendHeaders and page JS sees the override through the
+// module's content script (navigator.userAgent/appVersion/vendor/platform/
+// oscpu stay consistent with the spoof string).
+pref("rozelynx.ua.global", "");
+pref("rozelynx.ua.rules.enabled", true);
+//   pref("rozelynx.ua.rule.<n>.pattern", "*.example.com")
+//   pref("rozelynx.ua.rule.<n>.ua", "<full raw user agent string>")
+//   pref("rozelynx.ua.rule.<n>.enabled", true)
+
+// State sync (needs www-client/firefox USE=sync)
+// The sync button gathers tabs, history, cookies, extensions and the
+// rozelynx.* configuration, gzips + AES-GCM-256-encrypts them and packs
+// everything - payload AND key - into a self-contained
+// rozelynxsync://sync/#v=1&k=...&i=...&d=... magic link (no server, no
+// account). Opening the link in any RozeLynx restores that exact state.
+// The rozelynxsync: scheme is registered by the engine in
+// netwerk/base/rozelynx-sync/ and never fires for web-content principals,
+// so a hostile page cannot drive a restore.
+pref("rozelynx.sync.enabled", true);
 
 // User agent
 pref("general.useragent.override", "");

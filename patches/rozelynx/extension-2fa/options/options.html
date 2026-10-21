@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a2e;
+    --fg-muted: #6b7280;
+    --card-border: #e5e7eb;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e2e;
+      --fg: #cdd6f4;
+      --fg-muted: #a6adc8;
+      --card-border: #313244;
+    }
+  }
+  body { font-family: -apple-system, sans-serif; max-width: 600px; margin: 20px auto; padding: 0 16px; color: var(--fg); background: var(--bg); }
+  h1 { color: #8B5CF6; font-size: 20px; }
+  h2 { font-size: 15px; margin: 22px 0 8px 0; }
+  p { font-size: 12px; color: var(--fg-muted); }
+  .card { border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 16px; margin: 8px 0; }
+  .account { border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+  .name { font-weight: 600; font-size: 13px; }
+  .detail { font-size: 11px; color: var(--fg-muted); margin-top: 2px; word-break: break-all; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+  .row input[type="text"], .row select {
+    padding: 4px 6px; border: 1px solid var(--card-border); border-radius: 6px;
+    font: inherit; font-size: 12px; background: var(--bg); color: var(--fg);
+  }
+  .row input[type="text"] { min-width: 120px; }
+  button { padding: 5px 12px; font-size: 12px; border: none; border-radius: 6px; background: #8B5CF6; color: #fff; cursor: pointer; }
+  button.ghost { background: transparent; color: #8B5CF6; border: 1px solid var(--card-border); }
+  button.ghost:hover { background: rgba(139, 92, 246, 0.1); }
+  button.danger { background: transparent; color: var(--fg-muted); }
+  button.danger:hover { background: #fee2e2; color: #DC2626; }
+  @media (prefers-color-scheme: dark) { button.danger:hover { background: #f38ba8; color: #1e1e2e; } }
+  .status { font-size: 12px; color: #DC2626; margin-top: 6px; min-height: 14px; }
+  textarea { width: 100%; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  input[type="password"] { padding: 6px 8px; border: 1px solid var(--card-border); border-radius: 6px; font: inherit; background: var(--bg); color: var(--fg); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>RozeLynx 2FA</h1>
+<p>Manage the vault's accounts, passphrase and backups. The vault is
+passphrase-encrypted (AES-GCM via PBKDF2); the browser re-locks it on
+restart and after ten idle minutes.</p>
+
+<div class="status" id="main-status"></div>
+
+<h2>Accounts</h2>
+<div class="card" id="accounts-card">
+  <p id="accounts-locked-note" hidden>The vault is locked - unlock it from
+  the toolbar button to manage accounts.</p>
+  <div id="account-list"></div>
+  <p id="accounts-empty" hidden>No accounts yet. Add them from the toolbar
+  popup, by pasting an otpauth:// URI, or by clicking a setup link on a
+  page.</p>
+</div>
+
+<h2>Passphrase</h2>
+<div class="card">
+  <div class="row">
+    <input type="password" id="old-pass" placeholder="Current passphrase">
+  </div>
+  <div class="row">
+    <input type="password" id="new-pass" placeholder="New passphrase (min 8 chars)">
+  </div>
+  <div class="row">
+    <button id="change-pass-btn">Change passphrase</button>
+  </div>
+  <div class="status" id="pass-status"></div>
+</div>
+
+<h2>Backup</h2>
+<div class="card">
+  <p>Export writes the vault EXACTLY as stored - still encrypted, still
+  needing the passphrase - to a file. Import replaces this vault with one.</p>
+  <div class="row">
+    <button id="export-btn">Export encrypted vault</button>
+    <button id="import-btn" hidden>Choose a vault file...</button>
+    <input type="file" id="import-file" accept=".json,application/json" hidden>
+  </div>
+  <div id="import-confirm" hidden>
+    <textarea id="import-text" rows="6" readonly></textarea>
+    <div class="row">
+      <input type="password" id="import-pass" placeholder="That vault's passphrase">
+      <button id="import-apply">Replace this vault</button>
+    </div>
+  </div>
+  <div class="status" id="backup-status"></div>
+</div>
+
+<script src="options.js"></script>
+</body>
+</html>

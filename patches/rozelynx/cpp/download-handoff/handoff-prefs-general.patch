@@ -1,0 +1,57 @@
+--- a/browser/components/preferences/main.inc.xhtml
++++ b/browser/components/preferences/main.inc.xhtml
+@@ -151,6 +151,15 @@
+ <!-- Downloads -->
+ <html:setting-group groupid="downloads" data-category="paneGeneral" data-srd-migrated="" hidden="true"/>
+ 
++<!--
++  RozeLynx download hand-off (USE=download-handoff): the General-pane
++  section for the browser-side engine. The include file carries its own
++  script tag; a build without the feature does not ship it and the
++  preprocessor include is skipped by the build script (the file is only
++  copied in when download-handoff is on).
++-->
++#include rozelynx-handoff.inc.xhtml
++
+ <!-- Applications -->
+ <groupbox id="applicationsGroup" data-category="paneGeneral" hidden="true" data-srd-migrated=""
+   data-srd-groupid="applications">
+--- a/browser/components/preferences/jar.mn
++++ b/browser/components/preferences/jar.mn
+@@ -12,6 +12,8 @@
+    content/browser/preferences/search.js
+    content/browser/preferences/privacy.js
+    content/browser/preferences/librewolf.js
++   content/browser/preferences/rozelynx-handoff.js
++   content/browser/preferences/rozelynx-handoff.inc.xhtml
+    content/browser/preferences/sync.js
+    content/browser/preferences/moreFromMozilla.js
+    content/browser/preferences/fxaPairDevice.xhtml
+--- a/browser/locales/en-US/browser/preferences/preferences.ftl
++++ b/browser/locales/en-US/browser/preferences/preferences.ftl
+@@ -2807,3 +2807,25 @@
+ # use the browser. "Share" here means recommending or referring the browser
+ referrals-link2 =
+   .label = Share { -brand-product-name }
++
++## RozeLynx Download Hand-off (General pane, USE=download-handoff)
++
++rozelynx-handoff-header = Download hand-off
++rozelynx-handoff-description =
++    Hand downloads off to a configured download manager before RozeLynx
++    builds any save UI. One list, in order: the first handler that accepts
++    a download gets it, and the rest are not tried.
++rozelynx-handoff-mode-label = Hand downloads off to
++    .title = “Whatever is available” hands off only when at least one enabled handler can take the download.
++rozelynx-handoff-mode-auto = whatever is available
++rozelynx-handoff-mode-always = always
++rozelynx-handoff-mode-never = never
++rozelynx-handoff-empty = No handlers. Downloads stay in the browser.
++rozelynx-handoff-new-id =
++    .placeholder = uget, ext:<extension> or cmd:<program>
++rozelynx-handoff-add-btn = Add
++rozelynx-handoff-hint =
++    “uget” is built in and speaks uget-integrator’s own protocol. “cmd:aria2c”
++    runs a program on your PATH with the args you give it, and
++    “ext:some@extension” asks another extension that answers download
++    messages. Args may use {url} {filename} {referer} {ua} and {cookies}.

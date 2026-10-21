@@ -20,24 +20,40 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 13px;
   padding: 16px;
-  min-width: 280px;
+  min-width: 300px;
   text-align: center;
   background: #fff;
   color: #333;
+  position: relative;
 }
-h3 { font-size: 14px; margin-bottom: 12px; color: #111; }
+/* ── header row: title + the sync button pinned to the very top right ──
+   The popup body is position:relative; the button sits at the corner with
+   no padding interference, which is what "very top right corner of the main
+   extension body" asks for. */
+#popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+h3 { font-size: 14px; margin: 0; color: #111; text-align: left; flex: 1 1 auto; }
+#sync-btn {
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: transparent;
+  color: #8B5CF6;
+  border: 1px solid #8B5CF6;
+}
+#sync-btn:hover { background: #8B5CF6; color: #fff; }
+#sync-btn[disabled] { opacity: 0.6; cursor: default; }
 canvas { border: 1px solid #e5e7eb; border-radius: 8px; padding: 4px; }
 #url-display {
   margin-top: 10px;
   /* The auto side margins are load-bearing. This is a BLOCK box, and the
      body's `text-align: center` centres inline content only - it does not
-     centre the block itself. With no auto side margins the box sits hard
-     against the left padding, which is invisible while the popup is only as
-     wide as the QR canvas (max-width 260px nearly fills it) and obvious the
-     moment it is not: expanding "Interface bindings by URL" or "Download
-     hand-off" puts flex text inputs and a select in the popup, the popup
-     widens to fit them, and this box stays pinned left. The canvas is
-     inline-level, which is why the QR code itself never moved. */
+     centre the block itself. */
   margin-left: auto;
   margin-right: auto;
   padding: 8px 10px;
@@ -49,7 +65,6 @@ canvas { border: 1px solid #e5e7eb; border-radius: 8px; padding: 4px; }
   max-width: 260px;
   line-height: 1.4;
 }
-#loading { margin-top: 12px; color: #8B5CF6; }
 #error { margin-top: 12px; color: #DC2626; display: none; }
 button {
   margin-top: 12px;
@@ -63,6 +78,134 @@ button {
   cursor: pointer;
 }
 button:hover { background: #7C3AED; }
+
+/* ── User agent switcher (modules/user-agent/ua-ui.js) ──────────────
+   Hidden until the module answers, same pattern as the netiface section:
+   a build without USE=user-agent shows no trace of it. The GLOBAL picker
+   (preset dropdown + raw string) sits above the per-URL rules block, which
+   mirrors the netiface rules block: current-page status, add-a-rule row,
+   and a button that opens the all-rules modal. */
+#ua-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e5e7eb;
+  text-align: left;
+}
+.ua-heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111;
+  text-align: center;
+  margin-bottom: 8px;
+}
+#ua-global {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+#ua-global label span { font-size: 11px; color: #6b7280; flex: 0 0 auto; }
+#ua-global select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 2px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+}
+#ua-raw {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+  margin-bottom: 6px;
+}
+#ua-raw:focus { outline: 1px solid #8B5CF6; border-color: #8B5CF6; }
+#ua-raw[hidden] { display: none; }
+
+/* ── shared rules-section furniture ─────────────────────────────────
+   The netiface and user-agent rule blocks share one shape: a status line
+   saying whether the current page has a rule, an "Add a rule for this site"
+   button, a row with (pattern input, value dropdown, Add) and a "Manage
+   rules" button that opens the all-rules modal. The LIST itself deliberately
+   does not live here: it lives in the modal and in the extension's options
+   page. */
+.rules-sub {
+  border-top: 1px dashed #e5e7eb;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.rules-sub-heading {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+.rules-status {
+  font-size: 11px;
+  color: #6b7280;
+  min-height: 14px;
+  word-break: break-word;
+}
+.rules-status.matched { color: #059669; }
+.rules-status.error { color: #DC2626; }
+.rules-add-current {
+  margin-top: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 400;
+}
+.rules-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.rules-row input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+}
+.rules-row input[type="text"]:focus {
+  outline: 1px solid #8B5CF6;
+  border-color: #8B5CF6;
+}
+.rules-row select {
+  flex: 0 0 auto;
+  max-width: 118px;
+  padding: 4px 2px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #333;
+}
+.rules-row button { margin-top: 0; padding: 4px 10px; font-size: 11px; }
+.rules-manage {
+  margin-top: 6px;
+  padding: 3px 0;
+  width: 100%;
+  font-size: 11px;
+  background: transparent;
+  color: #8B5CF6;
+  border: 1px solid #e5e7eb;
+}
+.rules-manage:hover { background: #f3f4f6; color: #7C3AED; }
+
 #pwa-section {
   margin-top: 16px;
   padding-top: 14px;
@@ -111,316 +254,260 @@ button:hover { background: #7C3AED; }
 #pwa-reconcile[disabled] { opacity: 0.6; }
 
 /* ── Interface bindings by URL (modules/netiface/urlrules-ui.js) ──────
-   The whole section is hidden by default and revealed by that script when
-   the netiface experiment API is present, so a build without USE=net-iface
-   shows no trace of it. */
+   Hidden by default and revealed by that script when the netiface
+   experiment API is present, so a build without USE=net-iface shows no
+   trace of it. Only the compact controls live here; the list is in the
+   modal (opened by "Manage rules") and in the options page. */
 #urlrules-section { text-align: left; }
-#urlrules-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  margin-top: 0;
-  padding: 6px 4px;
-  background: transparent;
-  color: #333;
-  font-size: 12px;
-  font-weight: 500;
-  text-align: left;
-}
-#urlrules-header:hover { background: #f3f4f6; }
-#urlrules-chevron {
-  display: inline-block;
-  font-size: 10px;
-  transition: transform 120ms ease-in-out;
-}
-#urlrules-header[aria-expanded="true"] #urlrules-chevron {
-  transform: rotate(90deg);
-}
-#urlrules-title { flex: 1 1 auto; }
-#urlrules-count {
-  flex: 0 0 auto;
-  font-size: 10px;
-  font-weight: 400;
-  color: #9ca3af;
-}
-#urlrules-body { padding: 4px 2px 2px 2px; }
-#urlrules-master {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  padding-bottom: 6px;
-}
-#urlrules-master input { margin: 0; }
-.urlrules-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 0;
-}
-.urlrules-row input[type="text"] {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 4px 6px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 11px;
-  background: #fff;
-  color: #333;
-}
-.urlrules-row input[type="text"]:focus {
-  outline: 1px solid #8B5CF6;
-  border-color: #8B5CF6;
-}
-.urlrules-row select {
-  flex: 0 0 auto;
-  max-width: 108px;
-  padding: 4px 2px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 11px;
-  background: #fff;
-  color: #333;
-}
-.urlrules-row .urlrules-enabled { flex: 0 0 auto; margin: 0; }
-.urlrules-row button {
-  margin-top: 0;
-  padding: 3px 8px;
-  font-size: 11px;
-  background: transparent;
-  color: #9ca3af;
-}
-.urlrules-row button:hover { background: #fee2e2; color: #DC2626; }
-.urlrules-add { margin-top: 8px; }
-.urlrules-add button { margin-top: 0; }
-.urlrules-preview {
-  font-size: 11px;
-  color: #6b7280;
-  background: #f3f4f6;
-  border-radius: 6px;
-  padding: 6px 8px;
-  margin-bottom: 8px;
-  word-break: break-word;
-}
-.urlrules-preview b { color: #333; }
-.urlrules-empty {
-  font-size: 11px;
-  color: #9ca3af;
-  padding: 4px 2px 6px 2px;
-}
-.urlrules-empty {
-  font-size: 11px;
-  color: #9ca3af;
-  padding: 4px 2px 6px 2px;
-}
-#urlrules-add-current {
-  margin-top: 6px;
-  padding: 4px 10px;
-  font-size: 11px;
-  font-weight: 400;
-}
-.urlrules-hint {
-  font-size: 10px;
-  color: #9ca3af;
-  line-height: 1.5;
-  margin-top: 8px;
-}
-.urlrules-status {
-  font-size: 11px;
-  margin-top: 6px;
-  min-height: 14px;
-  color: #6b7280;
-  word-break: break-word;
-}
-.urlrules-status.error { color: #DC2626; }
 
-/* ── Download hand-off (modules/downloads-handoff/handlers-ui.js) ──────
-   Same hidden-until-the-script-finds-the-module pattern as the section
-   above, for the same reason: the module is absent from a build without
-   USE=download-handoff and a static <script> tag would log a missing
-   resource on every popup open. */
-#handoff-section { text-align: left; }
-#handoff-header {
+/* ── the all-rules modal ─────────────────────────────────────────────
+   One overlay for both rule lists (netiface and user agent). A fixed
+   backdrop over the popup body with a card that scrolls; opened by either
+   section's "Manage rules" button and by the options page on its own
+   (which renders the same editors inline, not in a modal). */
+#rules-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 17, 34, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#rules-modal[hidden] { display: none; }
+#rules-modal-card {
+  background: #fff;
+  color: #333;
+  border-radius: 10px;
+  width: calc(100% - 16px);
+  max-width: 340px;
+  max-height: 85%;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+}
+#rules-modal-head {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+#rules-modal-head b { font-size: 13px; flex: 1 1 auto; }
+#rules-modal-close {
+  margin: 0;
+  padding: 2px 8px;
+  font-size: 12px;
+  background: transparent;
+  color: #9ca3af;
+}
+#rules-modal-close:hover { background: #fee2e2; color: #DC2626; }
+#rules-modal-body {
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+.modal-block {
+  margin-bottom: 14px;
+}
+.modal-block-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111;
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
-  margin-top: 0;
-  padding: 6px 4px;
-  background: transparent;
-  color: #333;
-  font-size: 12px;
-  font-weight: 500;
-  text-align: left;
 }
-#handoff-header:hover { background: #f3f4f6; }
-#handoff-chevron {
-  display: inline-block;
-  font-size: 10px;
-  transition: transform 120ms ease-in-out;
-}
-#handoff-header[aria-expanded="true"] #handoff-chevron {
-  transform: rotate(90deg);
-}
-#handoff-title { flex: 1 1 auto; }
-#handoff-count {
-  flex: 0 0 auto;
+.modal-block-count {
   font-size: 10px;
   font-weight: 400;
   color: #9ca3af;
 }
-#handoff-body { padding: 4px 2px 2px 2px; }
-#handoff-master-wrap {
+.modal-master {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  padding-bottom: 6px;
+  padding: 4px 0 6px 0;
 }
-#handoff-master-wrap select {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 4px 2px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 11px;
-  background: #fff;
-  color: #333;
-}
-#handoff-mode {
-  font-size: 10px;
-  color: #9ca3af;
-  padding-bottom: 6px;
-  word-break: break-word;
-}
-.handoff-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 0;
-}
-.handoff-row input[type="text"] {
-  min-width: 0;
-  padding: 4px 6px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 11px;
-  background: #fff;
-  color: #333;
-}
-.handoff-row .handoff-id { flex: 1 1 40%; }
-.handoff-row .handoff-args { flex: 1 1 60%; }
-.handoff-row input[type="text"]:focus {
-  outline: 1px solid #8B5CF6;
-  border-color: #8B5CF6;
-}
-.handoff-row input[type="text"]:disabled {
-  background: #f9fafb;
-  color: #9ca3af;
-}
-.handoff-row .handoff-enabled { flex: 0 0 auto; margin: 0; }
-.handoff-row button {
-  margin-top: 0;
-  padding: 3px 8px;
-  font-size: 11px;
-  background: transparent;
-  color: #9ca3af;
-}
-.handoff-row button:hover { background: #fee2e2; color: #DC2626; }
-.handoff-note {
-  font-size: 10px;
-  color: #9ca3af;
-  padding: 0 2px 4px 2px;
-  word-break: break-word;
-}
-.handoff-note.off { color: #DC2626; }
-.handoff-add { margin-top: 8px; }
-.handoff-add button { margin-top: 0; }
-.handoff-add input[type="text"] {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 4px 6px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 11px;
-  background: #fff;
-  color: #333;
-}
-.handoff-add { display: flex; gap: 6px; }
-.handoff-empty {
+.modal-master input { margin: 0; }
+.modal-empty {
   font-size: 11px;
   color: #9ca3af;
   padding: 4px 2px 6px 2px;
 }
-.handoff-status {
+.modal-list .rules-row { margin-top: 4px; }
+.modal-list .rules-row input[type="text"] { flex: 1 1 45%; }
+.modal-list .rules-row select { flex: 1 1 35%; max-width: none; }
+.modal-list .rules-row button {
+  background: transparent;
+  color: #9ca3af;
+  padding: 3px 8px;
+}
+.modal-list .rules-row button:hover { background: #fee2e2; color: #DC2626; }
+.modal-status {
   font-size: 11px;
   margin-top: 6px;
   min-height: 14px;
   color: #6b7280;
   word-break: break-word;
 }
-.handoff-status.error { color: #DC2626; }
-.handoff-hint {
+.modal-status.error { color: #DC2626; }
+
+/* ── sync panel (modules/sync/sync-ui.js) ────────────────────────────
+   Slides in under the header when the sync button is clicked: history
+   depth choice, create button, the resulting magic link with a copy
+   button, and restore progress on the receiving side. */
+#sync-panel {
+  border: 1px solid #8B5CF6;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  text-align: left;
+  font-size: 12px;
+}
+#sync-panel[hidden] { display: none; }
+#sync-panel h4 { font-size: 12px; margin-bottom: 6px; color: #111; }
+.sync-depth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #6b7280;
+  padding: 2px 0;
+}
+.sync-depth input { margin: 0; }
+#sync-create { width: 100%; }
+#sync-result {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#sync-result[hidden] { display: none; }
+#sync-link {
+  width: 100%;
+  height: 54px;
+  font-size: 10px;
+  font-family: monospace;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 4px 6px;
+  background: #f9fafb;
+  color: #333;
+  resize: none;
+  word-break: break-all;
+}
+#sync-copy {
+  margin-top: 0;
+  width: 100%;
+  font-size: 11px;
+  padding: 6px 10px;
+}
+#sync-warning {
+  font-size: 10px;
+  color: #DC2626;
+  word-break: break-word;
+}
+#sync-progress {
+  font-size: 11px;
+  color: #8B5CF6;
+  min-height: 14px;
+  margin-top: 6px;
+  word-break: break-word;
+}
+#sync-progress[hidden] { display: none; }
+.sync-size {
   font-size: 10px;
   color: #9ca3af;
-  line-height: 1.5;
-  margin-top: 8px;
 }
+
 @media (prefers-color-scheme: dark) {
   .pwa-row:hover { background: #313244; }
   .pwa-name { color: #cdd6f4; }
-  #pwa-section { border-top-color: #313244; }
-  #urlrules-section { border-top-color: #313244; }
-  #urlrules-header { color: #cdd6f4; }
-  #urlrules-header:hover { background: #313244; }
-  .urlrules-row input[type="text"],
-  .urlrules-row select {
+  #pwa-section, #ua-section, #urlrules-section { border-top-color: #313244; }
+  .ua-heading { color: #cdd6f4; }
+  #ua-global select, #ua-raw,
+  .rules-row input[type="text"], .rules-row select {
     background: #313244;
     border-color: #45475a;
     color: #cdd6f4;
   }
-  .urlrules-row button:hover { background: #f38ba8; color: #1e1e2e; }
-  .urlrules-preview { background: #313244; color: #a6adc8; }
-  .urlrules-preview b { color: #cdd6f4; }
-  .urlrules-status { color: #a6adc8; }
-  .urlrules-status.error { color: #f38ba8; }
-  #handoff-section { border-top-color: #313244; }
-  #handoff-header { color: #cdd6f4; }
-  #handoff-header:hover { background: #313244; }
-  #handoff-master-wrap select,
-  .handoff-row input[type="text"],
-  .handoff-add input[type="text"] {
-    background: #313244;
-    border-color: #45475a;
-    color: #cdd6f4;
-  }
-  .handoff-row input[type="text"]:disabled { background: #262637; }
-  .handoff-row button:hover { background: #f38ba8; color: #1e1e2e; }
-  .handoff-note.off { color: #f38ba8; }
-  .handoff-status { color: #a6adc8; }
-  .handoff-status.error { color: #f38ba8; }
+  .rules-manage { border-color: #45475a; color: #cbb6ff; }
+  .rules-manage:hover { background: #313244; color: #cbb6ff; }
+  .rules-status { color: #a6adc8; }
+  .rules-status.matched { color: #34d399; }
+  .rules-status.error { color: #f38ba8; }
+  .rules-row button:hover { background: #f38ba8; color: #1e1e2e; }
+  #urlrules-section .rules-sub { border-top-color: #45475a; }
+  #rules-modal-card { background: #1e1e2e; color: #cdd6f4; }
+  #rules-modal-head { border-bottom-color: #313244; }
+  #rules-modal-head b { color: #cdd6f4; }
+  #rules-modal-close:hover { background: #f38ba8; color: #1e1e2e; }
+  .modal-block-heading { color: #cdd6f4; }
+  .modal-list .rules-row button:hover { background: #f38ba8; color: #1e1e2e; }
+  .modal-status { color: #a6adc8; }
+  .modal-status.error { color: #f38ba8; }
+  #sync-panel { border-color: #8B5CF6; }
+  #sync-panel h4 { color: #cdd6f4; }
+  #sync-link { background: #313244; border-color: #45475a; color: #cdd6f4; }
+  #sync-warning { color: #f38ba8; }
 }
 @media (prefers-color-scheme: dark) {
   body { background: #1e1e2e; color: #cdd6f4; }
   h3 { color: #cdd6f4; }
+  #sync-btn { color: #cbb6ff; border-color: #8B5CF6; }
+  #sync-btn:hover { background: #8B5CF6; color: #fff; }
   #url-display { background: #313244; color: #a6adc8; }
   canvas { border-color: #45475a; }
 }
 </style>
 </head>
 <body>
-<h3>RozeLynx QR Code</h3>
-<div id="loading">Generating...</div>
+<div id="popup-header">
+  <h3>RozeLynx</h3>
+  <!-- Account-less state sync: gathers tabs, history, cookies, extensions
+       and configuration, compresses + encrypts them and produces a magic
+       link that recreates this exact state in another RozeLynx. The UI
+       lives in modules/sync/sync-ui.js, loaded by the button itself so a
+       build without USE=sync shows a button that says so instead of a dead
+       one. -->
+  <button id="sync-btn" type="button" title="Create a sync magic link">&#9851; Sync</button>
+</div>
+<div id="sync-panel" hidden></div>
 <div id="error"></div>
+<!-- The QR code is no longer generated automatically: the canvas stays
+     blank until the user asks for a code with the button below, which is
+     the point of the button (auto-generation burned CPU on every popup
+     open for a code nobody looked at). -->
 <canvas id="qr-canvas" width="240" height="240" style="display:none;"></canvas>
 <div id="url-display" style="display:none;"></div>
-<button id="copy-btn" style="display:none;">Copy URL</button>
+<button id="generate-btn" type="button">Generate QR Code</button>
+<button id="copy-btn" type="button" style="display:none;">Copy URL</button>
+<!--
+  User agent switcher (modules/user-agent/ua-ui.js), placed between the QR
+  section and the PWA section. The section stays `hidden` until the module
+  answers; a build without USE=user-agent shows no trace of it.
+-->
+<div id="ua-section" hidden>
+  <div class="ua-heading">User agent</div>
+  <div id="ua-global">
+    <label for="ua-preset"><span>Use</span></label>
+    <select id="ua-preset"></select>
+  </div>
+  <input type="text" id="ua-raw" spellcheck="false" hidden
+         placeholder="Raw user agent string">
+  <div class="rules-sub">
+    <div class="rules-sub-heading">User agent by URL</div>
+    <div class="rules-status" id="ua-rules-status"></div>
+    <button type="button" class="rules-add-current" id="ua-add-current">Add a rule for this site</button>
+    <div class="rules-row">
+      <input type="text" id="ua-new-pattern" placeholder="*.example.com" spellcheck="false">
+      <select id="ua-new-ua"></select>
+      <button type="button" id="ua-add-btn">Add</button>
+    </div>
+    <button type="button" class="rules-manage" id="ua-manage">Manage user agent rules</button>
+  </div>
+</div>
 <div id="pwa-section">
   <h3 class="pwa-heading">Installed Apps</h3>
   <div id="pwa-list"></div>
@@ -436,97 +523,72 @@ button:hover { background: #7C3AED; }
   <button id="pwa-reconcile" type="button" hidden>Create missing launcher entries</button>
 </div>
 <!--
-  The per-URL interface rules editor is loaded by popup.js, not from here: it
-  lives in the netiface module (so it can move to its own popup later without
-  untangling this one) and that module is absent from a build without
-  USE=net-iface, so a static <script> tag would log a missing-resource error
-  on every popup open. The markup below stays `hidden` until the editor script
-  finds the netiface experiment API.
+  The per-URL interface rules section: COMPACT by design. All that shows on
+  the main extension body is whether the current page has a rule, the
+  "Add a rule for this site" button and the add row (pattern input, interface
+  dropdown, Add). The full list lives in the modal below and in the
+  extension's options page. `hidden` until the netiface experiment API
+  answers (a build without USE=net-iface shows nothing).
 -->
 <div id="urlrules-section" hidden>
-  <button type="button" id="urlrules-header" aria-expanded="false" aria-controls="urlrules-body">
-    <span id="urlrules-chevron" aria-hidden="true">&#9656;</span>
-    <span id="urlrules-title">Interface bindings by URL</span>
-    <span id="urlrules-count"></span>
-  </button>
-  <div id="urlrules-body" hidden>
-    <label id="urlrules-master">
-      <input type="checkbox" id="urlrules-enabled">
-      <span>Use URL rules for interface binding</span>
-    </label>
-    <div class="urlrules-preview" id="urlrules-preview"></div>
-    <div class="urlrules-empty" id="urlrules-empty" hidden>
-      No URL rules. Traffic follows your container and profile defaults.
+  <div class="rules-sub">
+    <div class="rules-sub-heading">Interface bindings by URL</div>
+    <div class="rules-status" id="urlrules-status"></div>
+    <button type="button" class="rules-add-current" id="urlrules-add-current">Add a rule for this site</button>
+    <div class="rules-row">
+      <input type="text" id="urlrules-new-pattern" placeholder="*.example.com" spellcheck="false">
+      <select id="urlrules-new-iface"></select>
+      <button type="button" id="urlrules-add-btn">Add</button>
     </div>
-    <div id="urlrules-list"></div>
-    <div class="urlrules-add">
-      <!-- Deliberately outside urlrules-empty: it used to live there, and
-           the empty block is hidden as soon as any rule exists - which made
-           the button unreachable exactly when it is most wanted, with the
-           manual row as the only way to add the second rule. -->
-      <button type="button" id="urlrules-add-current">Add a rule for this site</button>
-      <div class="urlrules-row">
-        <input type="text" id="urlrules-new-pattern" placeholder="*.example.com" spellcheck="false">
-        <select id="urlrules-new-iface"></select>
-        <button type="button" id="urlrules-add-btn">Add</button>
-      </div>
-    </div>
-    <div class="urlrules-status" id="urlrules-status"></div>
-    <div class="urlrules-hint">
-      A rule sends matching pages out through one interface.
-      <code>*.example.com</code> covers a host and its subdomains,
-      <code>example.com</code> only that host, <code>*</code> any host;
-      <code>*://host/mail</code> adds a scheme and a path prefix, and
-      <code>*</code> / <code>?</code> work inside the host. A tab you bound
-      by hand always wins, then a URL rule, then the container, then the
-      profile. An empty interface forces default routing for a match.
-    </div>
+    <button type="button" class="rules-manage" id="urlrules-manage">Manage interface rules</button>
   </div>
 </div>
 <!--
-  The download hand-off editor, like the URL-rules editor above, is loaded by
-  popup.js rather than from here: it lives in the downloads-handoff module, so
-  it is absent from the XPI on a build without USE=download-handoff. It stays
-  `hidden` until the script has talked to the background module and been told
-  what the handler list is.
+  The all-rules modal: one overlay shared by the interface rules and the
+  user agent rules. Rendered by lib/rules-modal.js, populated by the
+  netiface and user-agent UI scripts. The options page renders the same
+  editors inline instead.
 -->
-<div id="handoff-section" hidden>
-  <button type="button" id="handoff-header" aria-expanded="false" aria-controls="handoff-body">
-    <span id="handoff-chevron" aria-hidden="true">&#9656;</span>
-    <span id="handoff-title">Download hand-off</span>
-    <span id="handoff-count"></span>
-  </button>
-  <div id="handoff-body" hidden>
-    <label id="handoff-master-wrap">
-      <span>Hand downloads off to</span>
-      <select id="handoff-enabled">
-        <option value="auto">whatever is available</option>
-        <option value="true">always</option>
-        <option value="false">never</option>
-      </select>
-    </label>
-    <div id="handoff-mode"></div>
-    <div class="handoff-empty" id="handoff-empty" hidden>
-      No handlers. Downloads stay in the browser.
+<div id="rules-modal" hidden>
+  <div id="rules-modal-card">
+    <div id="rules-modal-head">
+      <b>Rules</b>
+      <button type="button" id="rules-modal-close">Close</button>
     </div>
-    <div id="handoff-list"></div>
-    <div class="handoff-add">
-      <input type="text" id="handoff-new-id" placeholder="cmd:aria2c" spellcheck="false">
-      <button type="button" id="handoff-add-btn">Add</button>
-    </div>
-    <div class="handoff-status" id="handoff-status"></div>
-    <div class="handoff-hint">
-      One list, in order: the first handler that accepts a download gets it.
-      <code>uget</code> is built in and speaks uget-integrator's own
-      protocol. <code>cmd:aria2c</code> runs a program on your PATH with the
-      args you give it, and <code>ext:some@extension</code> asks another
-      extension that answers download messages. Args may use
-      <code>{url}</code> <code>{filename}</code> <code>{referer}</code>
-      <code>{ua}</code> and <code>{cookies}</code>.
+    <div id="rules-modal-body">
+      <div class="modal-block" id="modal-netiface-block">
+        <div class="modal-block-heading">Interface bindings by URL
+          <span class="modal-block-count" id="modal-netiface-count"></span>
+        </div>
+        <label class="modal-master" id="modal-netiface-master">
+          <input type="checkbox" id="modal-netiface-enabled">
+          <span>Use URL rules for interface binding</span>
+        </label>
+        <div class="modal-empty" id="modal-netiface-empty" hidden>
+          No URL rules. Traffic follows your container and profile defaults.
+        </div>
+        <div class="modal-list" id="modal-netiface-list"></div>
+        <div class="modal-status" id="modal-netiface-status"></div>
+      </div>
+      <div class="modal-block" id="modal-ua-block">
+        <div class="modal-block-heading">User agent by URL
+          <span class="modal-block-count" id="modal-ua-count"></span>
+        </div>
+        <label class="modal-master" id="modal-ua-master">
+          <input type="checkbox" id="modal-ua-enabled">
+          <span>Use URL rules for the user agent</span>
+        </label>
+        <div class="modal-empty" id="modal-ua-empty" hidden>
+          No URL rules. Pages see the browser's real user agent.
+        </div>
+        <div class="modal-list" id="modal-ua-list"></div>
+        <div class="modal-status" id="modal-ua-status"></div>
+      </div>
     </div>
   </div>
 </div>
 <script src="lib/qrcode.js"></script>
+<script src="lib/rules-modal.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

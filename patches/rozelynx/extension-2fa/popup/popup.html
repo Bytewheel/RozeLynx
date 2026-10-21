@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px;
+    padding: 14px;
+    min-width: 300px;
+    background: #fff;
+    color: #333;
+  }
+  h3 { font-size: 14px; margin-bottom: 10px; color: #111; }
+  .sub { font-size: 11px; color: #6b7280; margin-bottom: 10px; }
+  input[type="password"], input[type="text"], select, textarea {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 12px;
+    background: #fff;
+    color: #333;
+    margin-bottom: 8px;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline: 1px solid #8B5CF6;
+    border-color: #8B5CF6;
+  }
+  button {
+    padding: 7px 14px;
+    border: none;
+    border-radius: 6px;
+    background: #8B5CF6;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover { background: #7C3AED; }
+  button.full { width: 100%; margin-top: 4px; }
+  button.ghost {
+    background: transparent;
+    color: #8B5CF6;
+    border: 1px solid #e5e7eb;
+  }
+  button.ghost:hover { background: #f3f4f6; }
+  .status { font-size: 11px; color: #DC2626; min-height: 14px; margin-bottom: 6px; }
+  .account {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    text-align: left;
+  }
+  .account .meta { font-size: 11px; color: #6b7280; word-break: break-all; }
+  .account .name { font-weight: 600; font-size: 12px; color: #111; }
+  .account .code {
+    font-family: monospace;
+    font-size: 20px;
+    letter-spacing: 2px;
+    color: #8B5CF6;
+    margin: 4px 0 2px 0;
+  }
+  .account .timer { font-size: 10px; color: #9ca3af; }
+  .account .actions { margin-top: 6px; display: flex; gap: 6px; }
+  .account .actions button { padding: 3px 10px; font-size: 11px; }
+  .empty { font-size: 11px; color: #9ca3af; padding: 8px 0; text-align: center; }
+  .divider { border-top: 1px solid #e5e7eb; margin: 10px 0; }
+  .add-form { text-align: left; }
+  .add-form label { font-size: 10px; color: #6b7280; display: block; margin-bottom: 2px; }
+  .grid2 { display: flex; gap: 6px; }
+  .grid2 > div { flex: 1 1 50%; }
+  [hidden] { display: none !important; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1e1e2e; color: #cdd6f4; }
+    h3, .account .name { color: #cdd6f4; }
+    input[type="password"], input[type="text"], select, textarea {
+      background: #313244; border-color: #45475a; color: #cdd6f4;
+    }
+    .account { border-color: #313244; }
+    .divider { border-top-color: #313244; }
+    button.ghost { color: #cbb6ff; border-color: #45475a; }
+    button.ghost:hover { background: #313244; }
+  }
+</style>
+</head>
+<body>
+<h3>RozeLynx 2FA</h3>
+
+<!-- first run: create the vault -->
+<div id="setup-view" hidden>
+  <div class="sub">Create your vault. The passphrase encrypts your 2FA secrets
+  at rest (AES-GCM, PBKDF2) and is required once per session to unlock;
+  there is no recovery, because there is no copy.</div>
+  <input type="password" id="setup-pass" placeholder="Passphrase (min 8 chars)">
+  <input type="password" id="setup-pass2" placeholder="Repeat passphrase">
+  <div class="status" id="setup-status"></div>
+  <button class="full" id="setup-btn">Create vault</button>
+</div>
+
+<!-- locked: unlock -->
+<div id="locked-view" hidden>
+  <div class="sub">The vault is locked. Enter your passphrase to read this
+  session's codes.</div>
+  <input type="password" id="unlock-pass" placeholder="Passphrase">
+  <div class="status" id="unlock-status"></div>
+  <button class="full" id="unlock-btn">Unlock</button>
+</div>
+
+<!-- unlocked: codes + add -->
+<div id="main-view" hidden>
+  <div class="sub" id="site-line"></div>
+  <div id="code-list"></div>
+  <div class="empty" id="code-empty" hidden>No accounts for this site. Codes
+  for every account are below, or add one now.</div>
+  <div class="divider"></div>
+  <button class="ghost full" id="toggle-add">Add an account</button>
+  <div id="add-form" class="add-form" hidden>
+    <label for="add-issuer">Issuer (e.g. GitHub)</label>
+    <input type="text" id="add-issuer" spellcheck="false">
+    <label for="add-account">Account (e.g. you@example.com)</label>
+    <input type="text" id="add-account" spellcheck="false">
+    <label for="add-secret">Secret (base32)</label>
+    <input type="text" id="add-secret" spellcheck="false" placeholder="JBSWY3DPEHPK3PXP">
+    <div class="grid2">
+      <div>
+        <label for="add-type">Type</label>
+        <select id="add-type">
+          <option value="totp" selected>TOTP (time)</option>
+          <option value="hotp">HOTP (counter)</option>
+        </select>
+      </div>
+      <div>
+        <label for="add-digits">Digits</label>
+        <select id="add-digits">
+          <option>6</option>
+          <option>7</option>
+          <option>8</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
+        <label for="add-period">Period (s)</label>
+        <input type="text" id="add-period" value="30" inputmode="numeric">
+      </div>
+      <div>
+        <label for="add-algo">Algorithm</label>
+        <select id="add-algo">
+          <option value="SHA1" selected>SHA-1</option>
+          <option value="SHA256">SHA-256</option>
+          <option value="SHA512">SHA-512</option>
+        </select>
+      </div>
+    </div>
+    <label for="add-otpauth">... or paste an otpauth:// URI</label>
+    <textarea id="add-otpauth" rows="2" spellcheck="false"
+      placeholder="otpauth://totp/GitHub:you?secret=...&issuer=GitHub"></textarea>
+    <div class="status" id="add-status"></div>
+    <button class="full" id="add-btn">Save account</button>
+  </div>
+  <div class="divider"></div>
+  <button class="ghost full" id="lock-btn">Lock now</button>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

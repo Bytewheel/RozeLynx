@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "RozeLynx 2FA",
+  "version": "1.0.0",
+  "description": "Two-factor authentication for RozeLynx: TOTP/HOTP codes, otpauth:// capture and page autofill, with a passphrase-encrypted vault",
+  "author": "ByteWheel",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "rozelynx-2fa@bytewheel.org",
+      "strict_min_version": "128.0"
+    }
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "alarms",
+    "notifications",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "*://*/*"
+  ],
+  "background": {
+    "scripts": [
+      "lib/totp.js",
+      "lib/vault.js",
+      "background.js"
+    ]
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "RozeLynx 2FA",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": false
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "64": "icons/icon64.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

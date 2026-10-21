@@ -1,0 +1,95 @@
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "nsISupports.idl"
+
+interface nsIChannel;
+interface nsIURI;
+
+/**
+ * One configured handler row, as the Settings > General > Download
+ * hand-off editor and about:config both see it.  Availability is the
+ * service's own cached probe for uget / cmd: handlers, and the extensions
+ * pref cache (rozelynx.downloads.handoff.extensions) for ext: handlers.
+ */
+[scriptable, uuid(2c5a9d3f-6e14-4b8a-9f2d-5a7b1e4c8d01)]
+interface nsIRozeLynxHandoffHandler : nsISupports
+{
+  readonly attribute long index;
+  readonly attribute AUTF8String id;       // "uget" | "cmd:<program>" | "ext:<id>" | raw
+  readonly attribute AUTF8String kind;    // "builtin" | "cmd" | "ext" | "unknown"
+  readonly attribute AUTF8String label;
+  readonly attribute AUTF8String hint;
+  readonly attribute AUTF8String args;    // only meaningful for cmd:
+  readonly attribute boolean enabled;
+  readonly attribute boolean available;
+  readonly attribute AUTF8String detail;  // probe result / why unavailable
+};
+
+/**
+ * RozeLynx download hand-off engine (USE=download-handoff).
+ *
+ * Handed downloads go to an external download manager (uget, any program
+ * on PATH, or an extension that answers download messages) BEFORE the
+ * browser builds any save UI: nsExternalAppHandler::OnStartRequest asks
+ * shouldTakeDownload() first, and only when the service takes the download
+ * is the request cancelled - a DECLINED hand-off falls through to the
+ * browser's own flow with nothing lost, which is the property the old
+ * extension implementation could not have (it had to cancel first).
+ *
+ * Everything is pref-backed and about:config is the source of truth:
+ *   rozelynx.downloads.handoff.enabled        "auto"|"true"|"false" (string)
+ *   rozelynx.downloads.handoff.min_size       bytes (-1/0 = no floor)
+ *   rozelynx.downloads.handoff.exclude        space/comma separated substrings
+ *   rozelynx.downloads.handler.<n>.id         row order = priority
+ *   rozelynx.downloads.handler.<n>.args       cmd: args template
+ *   rozelynx.downloads.handler.<n>.enabled
+ *   rozelynx.downloads.handoff.extensions     ext: probe cache the
+ *                                             RozeLynx extension relay
+ *                                             maintains (JSON id -> bool)
+ *
+ * Main thread only.  Handler EXECUTION is synchronous and bounded (1.5s
+ * per handler): OnStartRequest is synchronous, and the download either
+ * leaves the browser or continues in it before it returns.
+ */
+[scriptable, builtinclass, uuid(4d8b2f6a-9c31-4e57-8a2b-6f0d3e5c7b92)]
+interface nsIRozeLynxHandoff : nsISupports
+{
+  /**
+   * The gate.  true when the download should be handed off (mode on,
+   * size over the floor, URL not excluded, at least one available
+   * handler).  aHandlerId receives the id that takeDownload() will run,
+   * so the caller can report it.
+   */
+  boolean shouldTakeDownload(in AUTF8String aURL, in long long aSize,
+                             out AUTF8String aHandlerId);
+
+  /**
+   * Execute the hand-off for a URL the gate accepted: try the available
+   * handlers in order until one accepts (uget: framed stdio handshake;
+   * cmd: detached spawn; ext: observer round-trip through the RozeLynx
+   * extension relay with a 1.5s bound).  Returns the handler id that took
+   * the download, or "" when none did (in which case the CALLER must let
+   * the download continue in the browser - cancelling is the caller's move,
+   * and only on success).
+   */
+  AUTF8String takeDownload(in AUTF8String aURL, in AUTF8String aFilename,
+                           in AUTF8String aReferer, in long long aSize,
+                           in nsIURI aChannelURI, in nsIChannel aChannel);
+
+  /** The handler rows with their probe states, for the Settings editor. */
+  readonly attribute Array<nsIRozeLynxHandoffHandler> handlers;
+
+  /** Re-run availability probes (uget/cmd: PATH lookups + uget handshake). */
+  void refreshProbes();
+
+  /**
+   * Answer for an ext: handler request delivered via the
+   * "rozelynx-handoff-ext" observer (the relay calls this).  Unblocks the
+   * spin in takeDownload() for aRequestId.
+   */
+  void respondExtHandler(in unsigned long aRequestId, in boolean aAccepted,
+                         in AUTF8String aError);
+};

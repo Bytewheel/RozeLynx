@@ -28,7 +28,9 @@ var RozeLynxFeatures = (function() {
     //ROZELYNX_FEATURE_DISABLED: "lepton-skin": "modules/lepton-skin/background.js",
     //ROZELYNX_FEATURE_DISABLED: "ip-protection": "modules/ip-protection/background.js",
     //ROZELYNX_FEATURE_DISABLED: "net-iface": "modules/netiface/background.js",
-    //ROZELYNX_FEATURE_DISABLED: "download-handoff": "modules/downloads-handoff/background.js",
+    //ROZELYNX_FEATURE_DISABLED: "user-agent": "modules/user-agent/background.js",
+    //ROZELYNX_FEATURE_DISABLED: "sync": "modules/sync/background.js",
+    //ROZELYNX_FEATURE_DISABLED: "handoff-relay": "modules/handoff-relay/background.js",
   };
 
   var loadedModules = {};

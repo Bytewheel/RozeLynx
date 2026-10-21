@@ -1,27 +1,24 @@
-/* RozeLynx: per-URL interface rules editor.
+/* RozeLynx: per-URL interface rules UI.
  *
- * Renders the collapsible "Interface bindings by URL" section at the bottom of
- * the extension popup (the qr-code one, which is the extension's only popup).
- * The markup is already in modules/qr-code/popup.html; this script owns it and
- * leaves it `hidden` unless the netiface experiment API is present, so a build
- * without USE=net-iface shows no empty box.
+ * The popup section is COMPACT by design: whether the current page has a
+ * rule, the "Add a rule for this site" button, and the add row (pattern
+ * input, interface dropdown, Add). THE LIST ITSELF IS NOT HERE. It lives in
+ * the all-rules modal (lib/rules-modal.js opens it from the "Manage
+ * interface rules" button) and in the extension's options page, which
+ * renders the same rows from the same storage.
  *
  * Storage model, deliberately not its own: a rule is two prefs
  * (rozelynx.netiface.urlrule.<n>.pattern / .iface, plus an optional .enabled)
  * and the whole list is replaced through browser.rozelynxNetIface.setUrlRules().
- * That means the prefs stay the single source of truth - about:config shows
- * exactly what the editor shows - and the native service picks the change up
- * through its own rozelynx.netiface.* pref observer. This file never resolves
- * which rule wins: it asks the service (matchUrlRule), so the preview below
- * cannot disagree with the socket path.
- *
- * The one piece of local state is the collapsed/expanded flag, in
- * storage.local, because it is a UI preference and not a binding.
+ * The prefs stay the single source of truth - about:config shows exactly what
+ * the modal shows - and the native service picks the change up through its
+ * own rozelynx.netiface.* pref observer. This file never resolves which rule
+ * wins: it asks the service (matchUrlRule), so the status line cannot
+ * disagree with the socket path.
  */
 (function() {
   'use strict';
 
-  var STORAGE_KEY = 'rozelynx_netiface_urlrules_expanded';
   var LOG_PREFIX = '[RozeLynx:urlrules]';
 
   function api() {
@@ -41,24 +38,24 @@
     return;
   }
 
-  var header = document.getElementById('urlrules-header');
-  var count = document.getElementById('urlrules-count');
-  var body = document.getElementById('urlrules-body');
-  var master = document.getElementById('urlrules-enabled');
-  var preview = document.getElementById('urlrules-preview');
-  var listEl = document.getElementById('urlrules-list');
-  var emptyEl = document.getElementById('urlrules-empty');
+  var statusEl = document.getElementById('urlrules-status');
   var addCurrentBtn = document.getElementById('urlrules-add-current');
   var newPattern = document.getElementById('urlrules-new-pattern');
   var newIface = document.getElementById('urlrules-new-iface');
   var addBtn = document.getElementById('urlrules-add-btn');
-  var statusEl = document.getElementById('urlrules-status');
+  var manageBtn = document.getElementById('urlrules-manage');
+
+  // modal block (rendered by this script when the modal opens)
+  var modalMaster = document.getElementById('modal-netiface-enabled');
+  var modalCount = document.getElementById('modal-netiface-count');
+  var modalList = document.getElementById('modal-netiface-list');
+  var modalEmpty = document.getElementById('modal-netiface-empty');
+  var modalStatus = document.getElementById('modal-netiface-status');
 
   var rules = [];
   var interfaces = [];
   var activeTab = null;
   var activeUrl = '';
-  var expanded = false;
 
   function log(msg) {
     try {
@@ -66,33 +63,20 @@
     } catch (e) {}
   }
 
-  function showStatus(msg, isError) {
-    statusEl.textContent = msg || '';
-    statusEl.classList.toggle('error', !!isError);
-  }
-
-  // ── expand / collapse ────────────────────────────────────────────
-  // A real <button>, so Enter and Space already work and the popup stays
-  // keyboard-navigable; aria-expanded is the only state to keep in sync.
-  function setExpanded(value) {
-    expanded = !!value;
-    header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    body.hidden = !expanded;
-    if (expanded) {
-      refreshPreview();
+  function showStatus(msg, isError, isMatch) {
+    if (statusEl) {
+      statusEl.textContent = msg || '';
+      statusEl.classList.toggle('error', !!isError);
+      statusEl.classList.toggle('matched', !!isMatch);
     }
-    try {
-      browser.storage.local.set((function() {
-        var d = {};
-        d[STORAGE_KEY] = expanded;
-        return d;
-      })());
-    } catch (e) {}
   }
 
-  header.addEventListener('click', function() {
-    setExpanded(!expanded);
-  });
+  function showModalStatus(msg, isError) {
+    if (modalStatus) {
+      modalStatus.textContent = msg || '';
+      modalStatus.classList.toggle('error', !!isError);
+    }
+  }
 
   // ── data ─────────────────────────────────────────────────────────
 
@@ -100,10 +84,11 @@
     return Promise.resolve(svc.getUrlRules()).then(function(state) {
       state = state || {};
       rules = Array.isArray(state.rules) ? state.rules : [];
-      master.checked = state.enabled !== false;
+      if (modalMaster) modalMaster.checked = state.enabled !== false;
       return loadInterfaces();
-    }).then(render).catch(function(e) {
-      showStatus('Could not read the URL rules: ' + ((e && e.message) || e), true);
+    }).catch(function(e) {
+      showStatus('Could not read the URL rules: ' + ((e && e.message) || e),
+        true);
     });
   }
 
@@ -125,15 +110,15 @@
       } else {
         rules = nextRules;
       }
-      if (typeof res.enabled === 'boolean') {
-        master.checked = res.enabled;
+      if (typeof res.enabled === 'boolean' && modalMaster) {
+        modalMaster.checked = res.enabled;
       }
-      render();
-      refreshPreview();
+      renderModal();
+      refreshStatus();
       if (res.ok === false) {
-        showStatus(res.error || 'Could not save the rules.', true);
+        showModalStatus(res.error || 'Could not save the rules.', true);
       } else {
-        showStatus('');
+        showModalStatus('');
       }
       // The service already re-resolves on the next channel; this only makes
       // every window's chip show the new binding now instead of at the next
@@ -142,11 +127,12 @@
         action: 'netiface:refresh',
       })).catch(function() {});
     }).catch(function(e) {
-      showStatus('Could not save the rules: ' + ((e && e.message) || e), true);
+      showModalStatus('Could not save the rules: ' + ((e && e.message) || e),
+        true);
     });
   }
 
-  // ── render ───────────────────────────────────────────────────────
+  // ── dropdown plumbing ────────────────────────────────────────────
 
   function optionEl(value, label, selected) {
     var o = document.createElement('option');
@@ -175,15 +161,11 @@
   }
 
   /**
-   * A rule as the setUrlRules schema declares it. The rows rendered here
-   * come from getUrlRules(), whose records carry an extra `index` field -
-   * and Firefox's schema layer rejects a whole call over a single unknown
-   * object property (Schemas.sys.mjs ObjectType.normalize: "Unexpected
-   * property") unless the schema allows additionalProperties. Cloning the
-   * rows with Object.assign carried that index into every follow-up
-   * write, so the first add after a fresh install worked (the list was
-   * empty) and every later one died in validation. Project every stored
-   * row down to the three schema fields here.
+   * A rule as the setUrlRules schema declares it. The rows rendered in the
+   * modal come from getUrlRules(), whose records carry an extra `index`
+   * field - and Firefox's schema layer rejects a whole call over a single
+   * unknown object property unless the schema allows additionalProperties.
+   * Project every stored row down to the three schema fields here.
    */
   function schemaRule(r) {
     r = r || {};
@@ -194,86 +176,11 @@
     };
   }
 
-  function patternHint(pattern) {
-    return 'Pattern: ' + (pattern || '(empty)') +
-      ' — tab binding > URL rule > container > profile';
-  }
-
-  function render() {
-    count.textContent = rules.length
-      ? (rules.length + (rules.length === 1 ? ' rule' : ' rules'))
-      : '';
-
-    fillIfaceSelect(newIface, newIface.value || '');
-    listEl.textContent = '';
-    emptyEl.hidden = rules.length > 0;
-
-    rules.forEach(function(rule, i) {
-      var row = document.createElement('div');
-      row.className = 'urlrules-row';
-
-      var pattern = document.createElement('input');
-      pattern.type = 'text';
-      pattern.value = rule.pattern || '';
-      pattern.spellcheck = false;
-      pattern.title = patternHint(rule.pattern);
-      pattern.addEventListener('change', function() {
-        var value = pattern.value.trim();
-        if (value === (rules[i].pattern || '')) {
-          return;
-        }
-        var next = rules.map(schemaRule);
-        if (!value) {
-          // An empty pattern is not a rule the service can use, so the row is
-          // removed instead of being saved as a no-op.
-          next.splice(i, 1);
-        } else {
-          next[i].pattern = value;
-        }
-        write(next);
-      });
-      row.appendChild(pattern);
-
-      var sel = document.createElement('select');
-      sel.title = 'Interface for this rule; empty = force default routing';
-      fillIfaceSelect(sel, rule.iface || '');
-      sel.addEventListener('change', function() {
-        var next = rules.map(schemaRule);
-        next[i].iface = sel.value;
-        write(next);
-      });
-      row.appendChild(sel);
-
-      var enabled = document.createElement('input');
-      enabled.type = 'checkbox';
-      enabled.className = 'urlrules-enabled';
-      enabled.checked = rule.enabled !== false;
-      enabled.title = 'Enable this rule';
-      enabled.addEventListener('change', function() {
-        var next = rules.map(schemaRule);
-        next[i].enabled = enabled.checked;
-        write(next);
-      });
-      row.appendChild(enabled);
-
-      var del = document.createElement('button');
-      del.type = 'button';
-      del.textContent = 'X';
-      del.title = 'Delete this rule';
-      del.addEventListener('click', function() {
-        var next = rules.map(schemaRule);
-        next.splice(i, 1);
-        write(next);
-      });
-      row.appendChild(del);
-
-      listEl.appendChild(row);
-    });
-  }
-
-  // ── match preview ────────────────────────────────────────────────
+  // ── current-page status (the popup body's one piece of truth) ────
   // Asked of the service, never computed here: the point of the line is to
-  // show the winner the resolver will pick.
+  // show the winner the resolver will pick for the page the user is looking
+  // at, which is exactly the question matchUrlRule answers.
+
   function hostOf(url) {
     try {
       return new URL(url).hostname;
@@ -283,54 +190,41 @@
   }
 
   var LAYER_TEXT = {
-    tab: 'this tab’s own binding',
+    tab: 'this tab\u2019s own binding',
     url: null,  // built from the rule, below
     container: 'the container default',
     profile: 'the profile default',
   };
 
-  function renderPreview() {
-    preview.textContent = '';
+  function refreshStatus() {
     if (!activeUrl || !activeTab) {
-      preview.textContent = 'No web page in this tab to preview.';
+      showStatus('No web page in this tab.');
       return;
     }
     var host = hostOf(activeUrl);
-    var b = document.createElement('b');
-    var span = document.createElement('span');
-    var rule = { matched: false, index: -1, pattern: '', iface: '' };
-
-    Promise.resolve(svc.matchUrlRule(activeUrl)).then(function(r) {
-      rule = r || rule;
+    Promise.resolve(svc.matchUrlRule(activeUrl)).then(function(rule) {
+      rule = rule || { matched: false, index: -1, pattern: '', iface: '' };
+      if (rule.matched) {
+        showStatus(host + ' \u2192 ' + (rule.iface || 'default routing') +
+          ' (rule #' + rule.index + ', ' + rule.pattern + ')', false, true);
+      } else {
+        showStatus(host + ' has no interface rule.');
+      }
       return Promise.resolve(svc.getEffective(activeTab.id));
     }).then(function(eff) {
       eff = eff || {};
-      b.textContent = host;
-      span.append(' — ' + (eff.iface || 'default routing') + ' via ');
-      if (eff.layer === 'url') {
-        span.append('URL rule #' + rule.index + ' (' + rule.pattern + ')');
-      } else {
-        span.append(LAYER_TEXT[eff.layer] || 'no binding');
+      if (eff.layer && eff.layer !== 'url') {
+        showStatus(statusEl.textContent +
+          ' \u2014 effective: ' + (eff.iface || 'default routing') +
+          ' via ' + (LAYER_TEXT[eff.layer] || eff.layer));
       }
-      if (!rule.matched) {
-        span.append(' — no URL rule matches it');
-      }
-      preview.appendChild(b);
-      preview.appendChild(span);
     }).catch(function(e) {
-      log('preview failed: ' + ((e && e.message) || e));
-      preview.textContent = host + ' — preview unavailable';
+      log('status failed: ' + ((e && e.message) || e));
+      showStatus(host + ' \u2014 status unavailable');
     });
   }
 
-  function refreshPreview() {
-    if (!expanded) {
-      return;
-    }
-    renderPreview();
-  }
-
-  // ── add / delete ─────────────────────────────────────────────────
+  // ── add (popup body row) ─────────────────────────────────────────
 
   function addRule(pattern) {
     var value = String(pattern || '').trim();
@@ -375,19 +269,111 @@
     newPattern.select();
   });
 
-  master.addEventListener('change', function() {
-    var wanted = master.checked;
-    Promise.resolve(svc.setUrlRulesEnabled(wanted)).then(function(res) {
-      master.checked = !!(res && res.enabled);
-      showStatus(res && res.ok === false
-        ? (res.error || 'Could not change the master switch.')
-        : '');
-    }).catch(function(e) {
-      master.checked = !wanted;
-      showStatus('Could not change the master switch: ' +
-        ((e && e.message) || e), true);
+  // ── the modal list ───────────────────────────────────────────────
+  // The full rules list, the master switch and the per-row editors. The
+  // options page renders the same shape from the same calls, so there are
+  // two views of one store, not two stores.
+
+  function renderModal() {
+    if (!modalList) {
+      return;
+    }
+    modalCount.textContent = rules.length
+      ? '(' + rules.length + (rules.length === 1 ? ' rule' : ' rules') + ')'
+      : '';
+    fillIfaceSelect(newIface, newIface.value || '');
+    modalList.textContent = '';
+    modalEmpty.hidden = rules.length > 0;
+
+    rules.forEach(function(rule, i) {
+      var row = document.createElement('div');
+      row.className = 'rules-row';
+
+      var pattern = document.createElement('input');
+      pattern.type = 'text';
+      pattern.value = rule.pattern || '';
+      pattern.spellcheck = false;
+      pattern.title = 'Pattern: ' + (rule.pattern || '(empty)') +
+        ' \u2014 tab binding > URL rule > container > profile';
+      pattern.addEventListener('change', function() {
+        var value = pattern.value.trim();
+        if (value === (rules[i].pattern || '')) {
+          return;
+        }
+        var next = rules.map(schemaRule);
+        if (!value) {
+          // An empty pattern is not a rule the service can use, so the row is
+          // removed instead of being saved as a no-op.
+          next.splice(i, 1);
+        } else {
+          next[i].pattern = value;
+        }
+        write(next);
+      });
+      row.appendChild(pattern);
+
+      var sel = document.createElement('select');
+      sel.title = 'Interface for this rule; empty = force default routing';
+      fillIfaceSelect(sel, rule.iface || '');
+      sel.addEventListener('change', function() {
+        var next = rules.map(schemaRule);
+        next[i].iface = sel.value;
+        write(next);
+      });
+      row.appendChild(sel);
+
+      var enabled = document.createElement('input');
+      enabled.type = 'checkbox';
+      enabled.checked = rule.enabled !== false;
+      enabled.title = 'Enable this rule';
+      enabled.addEventListener('change', function() {
+        var next = rules.map(schemaRule);
+        next[i].enabled = enabled.checked;
+        write(next);
+      });
+      row.appendChild(enabled);
+
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = 'X';
+      del.title = 'Delete this rule';
+      del.addEventListener('click', function() {
+        var next = rules.map(schemaRule);
+        next.splice(i, 1);
+        write(next);
+      });
+      row.appendChild(del);
+
+      modalList.appendChild(row);
     });
-  });
+  }
+
+  if (modalMaster) {
+    modalMaster.addEventListener('change', function() {
+      var wanted = modalMaster.checked;
+      Promise.resolve(svc.setUrlRulesEnabled(wanted)).then(function(res) {
+        modalMaster.checked = !!(res && res.enabled);
+        showModalStatus(res && res.ok === false
+          ? (res.error || 'Could not change the master switch.')
+          : '');
+      }).catch(function(e) {
+        modalMaster.checked = !wanted;
+        showModalStatus('Could not change the master switch: ' +
+          ((e && e.message) || e), true);
+      });
+    });
+  }
+
+  if (manageBtn && globalThis.RozeLynxRulesModal) {
+    manageBtn.addEventListener('click', function() {
+      globalThis.RozeLynxRulesModal.open();
+    });
+    // Refill the modal block from storage each time the modal opens, so it
+    // never shows a stale copy of the list.
+    globalThis.RozeLynxRulesModal.onOpen(function() {
+      readState().then(renderModal);
+    });
+  }
 
   // ── current tab, then the section ────────────────────────────────
 
@@ -408,14 +394,6 @@
       // lower half still pays nothing, and a build without net-iface never
       // shows the box.
       section.hidden = false;
-      return browser.storage.local.get(STORAGE_KEY);
-    })
-    .then(function(stored) {
-      setExpanded(!!(stored && stored[STORAGE_KEY]));
-    })
-    .catch(function(e) {
-      section.hidden = false;
-      setExpanded(false);
-      log('expand-state load failed: ' + ((e && e.message) || e));
+      refreshStatus();
     });
 })();

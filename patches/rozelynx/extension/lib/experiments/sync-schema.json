@@ -1,0 +1,30 @@
+[
+  {
+    "namespace": "rozelynxSync",
+    "functions": [
+      {
+        "name": "getPendingLink",
+        "type": "function",
+        "async": true,
+        "description": "Returns the last rozelynxsync:// URL the browser handed to the extension (the observer notification can race an event-page wakeup, so the link is also parked in a slot this reads; empty string when none is pending).",
+        "parameters": []
+      }
+    ],
+    "events": [
+      {
+        "name": "onSyncLink",
+        "type": "function",
+        "description": "Fired when the browser navigates to a rozelynxsync:// magic link (typed in the URL bar, clicked from a page, or passed on the command line by the OS handler). The event carries the full URL, payload and all; the extension decrypts it and restores the state it encodes.",
+        "parameters": [
+          {
+            "name": "info",
+            "type": "object",
+            "properties": {
+              "url": { "type": "string" }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]
