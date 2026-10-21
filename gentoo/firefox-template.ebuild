@@ -120,7 +120,7 @@ IUSE+=" language-packs xdg-profile newtab-fixes"
 #                     (TOTP/HOTP vault, otpauth:// capture, page autofill)
 IUSE+=" rozelynx rozelynx-debug chrome-web-store experiments external-browser"
 IUSE+=" i18n mouse-gestures qr-code pwa lepton-skin ip-protection net-iface"
-IUSE+=" download-handoff user-agent sync twofa pam-passkeys"
+IUSE+=" download-handoff +user-agent +sync +twofa pam-passkeys"
 
 REQUIRED_USE="|| ( X wayland )
 	debug? ( !system-av1 )
