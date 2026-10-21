@@ -1,17 +1,16 @@
 --- a/uriloader/exthandler/nsExternalHelperAppService.cpp
 +++ b/uriloader/exthandler/nsExternalHelperAppService.cpp
-@@ -26,6 +26,10 @@
+@@ -26,6 +26,9 @@
  
  #include "ExternalHelperAppParent.h"
  #include "nsExternalHelperAppService.h"
 +#include "mozilla/RozeLynxHandoff.h"
-+#include "nsIHttpChannel.h"
 +#include "nsILoadInfo.h"
 +#include "nsIReferrerInfo.h"
  #include "nsCExternalHandlerService.h"
  #include "nsIURI.h"
  #include "nsIURL.h"
-@@ -1753,6 +1754,68 @@
+@@ -1753,6 +1756,71 @@
      return NS_OK;
    }
  
@@ -48,8 +47,8 @@
 +              urlSpec, mContentLength, handlerId, &handoffTakes)) &&
 +          handoffTakes && handlerId.Length()) {
 +        // The filename suggestion is what the manager will default to, not
-+        // a path we chose; the referer comes from the http channel's
-+        // referrer info (the load info no longer carries it).
++        // a path we chose; the referer comes from the channel's referrer
++        // info like the old collector's item.referrer did.
 +        nsAutoCString refererSpec;
 +        nsCOMPtr<nsIHttpChannel> httpChannel =
 +            do_QueryInterface(request);
