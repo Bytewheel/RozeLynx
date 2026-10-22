@@ -394,6 +394,11 @@
       // lower half still pays nothing, and a build without net-iface never
       // shows the box.
       section.hidden = false;
+      // The add row lives on the popup body, not in the modal, so its
+      // dropdown is filled HERE: renderModal() (the only other caller of
+      // fillIfaceSelect) runs when the modal opens or a rule is written,
+      // and until then the <select> would be empty - no interface to pick.
+      fillIfaceSelect(newIface, newIface.value || '');
       refreshStatus();
     });
 })();

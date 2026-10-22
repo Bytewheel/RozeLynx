@@ -408,10 +408,15 @@
   // ── boot ───────────────────────────────────────────────────────────
   // presets.js must be in the page before the dropdowns can be built; the
   // script tag is created here because a static tag in popup.html would
-  // 404 on a build whose XPI does not carry the user-agent module.
+  // 404 on a build whose XPI does not carry the user-agent module. The
+  // URL resolves against the POPUP document (modules/qr-code/), not this
+  // script's own directory, so it must spell the path out - 'presets.js'
+  // alone pointed at modules/qr-code/presets.js, the load always failed
+  // and the dropdowns shipped with the onerror fallback's EMPTY preset
+  // list.
 
   var script = document.createElement('script');
-  script.src = 'presets.js';
+  script.src = '../user-agent/presets.js';
   script.onload = function() {
     browser.tabs.query({ active: true, currentWindow: true })
       .then(function(tabs) {
