@@ -132,16 +132,20 @@ ALL_FLAGS=(
     i18n mouse-gestures qr-code pwa lepton-skin ip-protection net-iface
     download-handoff user-agent sync twofa pam-passkeys
 )
-# system-harfbuzz is deliberately NOT on by default: with it, the skia
-# unified TU that includes Skia's harfbuzz adapter references hb_* with
-# STV_HIDDEN (Skia's own #pragma GCC visibility push(hidden) sits over the
-# hb headers), and libxul's -z defs link then fails on a fresh objdir -
-# ld.lld ("undefined hidden symbol", the merged visibility cannot bind to
-# libharfbuzz.so) and ld.bfd ("undefined reference") alike. The shipped
-# v158.0.x tarballs and the emerged binary both carry VENDORED harfbuzz
-# (a local `t hb_blob_destroy` inside libxul), so vendored is also the
-# release lineage. --use system-harfbuzz stays available for anyone who
-# wants to fight the skia visibility merge on their own toolchain.
+# system-harfbuzz is NOT on by default: with the firefox-158-patches-01
+# patchset, skia's bare #include "hb.h" resolved against the IN-TREE
+# gfx/harfbuzz/src headers (not the system_wrapper'd harfbuzz/hb.h), so
+# Mozilla's config/gcc_hidden.h force-include left those hb_* refs
+# STV_HIDDEN and libxul's -z defs link failed - ld.lld ("undefined
+# hidden symbol": the merged visibility cannot bind to libharfbuzz.so)
+# and ld.bfd alike. firefox-158-patches-02 rewrites the Gentoo
+# system-harfbuzz patch (bmo-847568) to drop the in-tree include from
+# skia under MOZ_SYSTEM_HARFBUZZ and force HB_EXTERN default visibility
+# in every consumer, so system-harfbuzz links again (verified: lld 23,
+# harfbuzz 12.3.2). The default stays OFF anyway: the shipped v158.0.x
+# tarballs carry VENDORED harfbuzz (a local `t hb_blob_destroy` inside
+# libxul), so vendored is the release lineage; flip it on deliberately
+# if the tarballs should switch to the system library.
 DEFAULT_USE_ON=(
     rozelynx chrome-web-store experiments external-browser i18n mouse-gestures
     qr-code pwa lepton-skin ip-protection net-iface download-handoff

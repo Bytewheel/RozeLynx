@@ -7,7 +7,7 @@
 
 EAPI=8
 
-FIREFOX_PATCHSET="firefox-158-patches-01.tar.xz"
+FIREFOX_PATCHSET="firefox-158-patches-02.tar.xz"
 
 LLVM_COMPAT=( 22 23 )
 
@@ -217,7 +217,7 @@ COMMON_DEPEND="${FF_ONLY_DEPEND}
 		>=media-libs/libaom-3.10.0:=
 	)
 	system-harfbuzz? (
-		>=media-libs/harfbuzz-2.8.1:0=
+		>=media-libs/harfbuzz-10.0.0:0=
 		!wasm-sandbox? ( >=media-gfx/graphite2-1.3.13 )
 	)
 	system-icu? ( >=dev-libs/icu-78.1:= )
