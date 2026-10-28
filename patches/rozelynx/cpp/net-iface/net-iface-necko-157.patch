@@ -798,20 +798,6 @@ index 8417f2963c..4686fe3e49 100644
    bool MaybeBootstrap(const nsACString& possible, nsACString& result);
    void RecordTRRStatus(TRR* aTrrRequest);
    bool ParentalControlEnabled() const { return mParentalControlEnabled; }
-diff --git a/netwerk/dns/moz.build b/netwerk/dns/moz.build
-index 2369794f24..186d279eb3 100644
---- a/netwerk/dns/moz.build
-+++ b/netwerk/dns/moz.build
-@@ -105,6 +105,9 @@ GeneratedFile(
-     "etld_data.inc", script="prepare_tlds.py", inputs=["effective_tld_names.dat"]
- )
- 
-+if CONFIG["MOZ_SYSTEM_HARFBUZZ"]:
-+    CXXFLAGS += CONFIG["MOZ_HARFBUZZ_CFLAGS"]
-+
- # need to include etld_data.inc
- LOCAL_INCLUDES += [
-     "/netwerk/base",
 diff --git a/netwerk/dns/nsDNSService2.cpp b/netwerk/dns/nsDNSService2.cpp
 index d4b0585a40..29c304e7f0 100644
 --- a/netwerk/dns/nsDNSService2.cpp
