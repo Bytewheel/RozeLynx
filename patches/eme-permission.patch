@@ -190,3 +190,22 @@ index 000000000000..c019ce2073bc
 +    return;
 +  }
 +}
+diff --git a/browser/locales/en-US/chrome/browser/browser.properties b/browser/locales/en-US/chrome/browser/browser.properties
+--- a/browser/locales/en-US/chrome/browser/browser.properties
++++ b/browser/locales/en-US/chrome/browser/browser.properties
+@@ -109,6 +109,15 @@
+ newTabContainer.tooltip=Open a new tab (%S)\nPress and hold to open a new container tab
+ newTabAlwaysContainer.tooltip=Select container to open a new tab
+ 
++# EME permission prompt
++# LOCALIZATION NOTE (eme.siteprompt2): %S is hostname
++eme.siteprompt2=Allow %S to play DRM-controlled content?
++eme.block=Block
++eme.block.accesskey=B
++eme.allow2=Allow
++eme.allow2.accesskey=A
++eme.remember2=Remember this decision
++
+ # Canvas permission prompt
+ # LOCALIZATION NOTE (canvas.siteprompt2): %S is hostname
+ canvas.siteprompt2=Allow %S to use your HTML5 canvas image data?

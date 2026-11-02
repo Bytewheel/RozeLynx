@@ -153,6 +153,25 @@ diff --git a/browser/modules/moz.build b/browser/modules/moz.build
  if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
 
 diff --git a/browser/modules/SitePermissions.sys.mjs b/browser/modules/SitePermissions.sys.mjs
+--- a/browser/modules/SitePermissions.sys.mjs
++++ b/browser/modules/SitePermissions.sys.mjs
+@@ -718,9 +718,12 @@
+       return key;
+     }
+     let labelID = gPermissions.get(id).labelID || id;
+-    return gStringBundle.formatStringFromName(`permission.${labelID}.label`, [
+-      key,
+-    ]);
++    let label = `permission.${labelID}.label`;
++    try {
++      return gStringBundle.formatStringFromName(label, [key]);
++    } catch {
++      return null;
++    }
+   },
+ 
+   /**
+diff --git a/browser/modules/SitePermissions.sys.mjs b/browser/modules/SitePermissions.sys.mjs
 index 91b2aa7deeff..114fd428a9f6 100644
 --- a/browser/modules/SitePermissions.sys.mjs
 +++ b/browser/modules/SitePermissions.sys.mjs
@@ -244,3 +263,67 @@ index e81a1e037e03..3d9021f3448e 100644
  }
 
 
+diff --git a/browser/locales/en-US/chrome/browser/sitePermissions.properties b/browser/locales/en-US/chrome/browser/sitePermissions.properties
+--- a/browser/locales/en-US/chrome/browser/sitePermissions.properties
++++ b/browser/locales/en-US/chrome/browser/sitePermissions.properties
+@@ -64,6 +64,8 @@
+ # cleared when the browser closes, for users who clear data on shutdown.
+ permission.persist-data-on-shutdown.label = Keep site data when closing
+ permission.canvas.label = Extract canvas data
++permission.webgl.label = Create WebGL context
++permission.eme.label = Play DRM-controlled content
+ permission.midi.label = Access MIDI devices
+ permission.midi-sysex.label = Access MIDI devices with SysEx support
+ permission.serial.label = Access serial ports
+diff --git a/browser/locales/en-US/browser/browser.ftl b/browser/locales/en-US/browser/browser.ftl
+--- a/browser/locales/en-US/browser/browser.ftl
++++ b/browser/locales/en-US/browser/browser.ftl
+@@ -185,6 +185,8 @@
+ urlbar-midi-blocked =
+     .tooltiptext = You have blocked MIDI access for this website.
++urlbar-eme-blocked =
++    .tooltiptext = You have blocked DRM-controlled content for this website.
+ urlbar-serial-blocked =
+     .tooltiptext = You have blocked serial port access for this website.
+ urlbar-install-blocked =
+     .tooltiptext = You have blocked add-on installation for this website.
+diff --git a/browser/locales/en-US/browser/preferences/preferences.ftl b/browser/locales/en-US/browser/preferences/preferences.ftl
+--- a/browser/locales/en-US/browser/preferences/preferences.ftl
++++ b/browser/locales/en-US/browser/preferences/preferences.ftl
+@@ -2033,6 +2033,12 @@
+ permissions-xr2 =
+     .label = Virtual reality
+ 
++permissions-webgl2 =
++    .label = WebGL
++
++permissions-eme2 =
++    .label = DRM-controlled content
++
+ permissions-camera2 =
+     .label = Camera
+ 
+diff --git a/browser/locales/en-US/browser/preferences/permissions.ftl b/browser/locales/en-US/browser/preferences/permissions.ftl
+--- a/browser/locales/en-US/browser/preferences/permissions.ftl
++++ b/browser/locales/en-US/browser/preferences/permissions.ftl
+@@ -254,3 +254,20 @@
+ permissions-doh-remove-all =
+     .label = Remove All
+     .accesskey = e
++
++## Site Permissions - WebGL
++
++permissions-site-webgl-window2 =
++    .title = Settings - WebGL Permissions
++    .style = { permissions-window2.style }
++permissions-site-webgl-desc = The following websites have requested to create a WebGL context. You can specify which websites are allowed to create a WebGL context. You can also block new requests asking to create a WebGL context.
++
++## Site Permissions - DRM
++
++permissions-site-eme-window2 =
++    .title = Settings - DRM Permissions
++    .style = { permissions-window2.style }
++permissions-site-eme-desc = The following websites have requested to play DRM-controlled content. You can specify which websites are allowed to play DRM-controlled content. You can also block new requests asking to play DRM-controlled content.
++permissions-site-eme-disable-label =
++    .label = Block new requests asking to play DRM-controlled content
++permissions-site-eme-disable-desc = This will prevent any websites not listed above from requesting permission to play DRM-controlled content. Blocking DRM-controlled content may break some website features.
