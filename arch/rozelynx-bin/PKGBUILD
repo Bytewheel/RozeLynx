@@ -6,7 +6,7 @@
 
 pkgname=rozelynx-bin
 pkgver=158.0.3
-pkgrel=7
+pkgrel=1
 pkgdesc='RozeLynx Web Browser: Firefox fork with LibreWolf privacy patches and per-tab network interface binding (binary release; Wayland-only builds - build rozelynx-git for X11/XWayland)'
 arch=(x86_64)
 url='https://bytewheel.org/rozelynx'
