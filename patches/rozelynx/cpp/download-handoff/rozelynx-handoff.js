@@ -170,7 +170,7 @@ const gRozeLynxHandoffPane = {
       args.placeholder = h.kind === "cmd" ? "{url}" : "—";
       args.title =
         h.kind === "cmd"
-          ? "Args for the program. {url} {filename} {referer} {ua} {cookies}"
+          ? "Args for the program. {url} {filename} {referer} {ua} {cookies} {user} {password}"
           : "Only a cmd: handler takes arguments";
       args.addEventListener("change", () => {
         const next = handlers.map(cloneHandler);

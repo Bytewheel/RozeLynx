@@ -1,16 +1,18 @@
 --- a/uriloader/exthandler/nsExternalHelperAppService.cpp
 +++ b/uriloader/exthandler/nsExternalHelperAppService.cpp
-@@ -26,6 +26,9 @@
+@@ -26,6 +26,11 @@
  
  #include "ExternalHelperAppParent.h"
  #include "nsExternalHelperAppService.h"
 +#include "mozilla/RozeLynxHandoff.h"
 +#include "nsILoadInfo.h"
++#include "nsIPropertyBag.h"
 +#include "nsIReferrerInfo.h"
++#include "nsIVariant.h"
  #include "nsCExternalHandlerService.h"
  #include "nsIURI.h"
  #include "nsIURL.h"
-@@ -1753,6 +1756,71 @@
+@@ -1753,6 +1758,97 @@
      return NS_OK;
    }
  
@@ -39,10 +41,36 @@
 +        isPrivate =
 +            loadInfo->GetOriginAttributes().mPrivateBrowsingId != 0;
 +      }
++      // A request another extension already claimed is not ours to
++      // hand off: webRequest marks the channel (redirectedByExtension
++      // / cancelledByExtension) when an interrupting extension - uGet
++      // Integration's intercept, a blocker's cancel - took it, and a
++      // failed or cancelled channel has no download left to take.
++      // Both checks exist so one click can never become two
++      // hand-offs.
++      nsresult channelStatus = NS_OK;
++      handoffChannel->GetStatus(&channelStatus);
++      bool claimedByExtension = false;
++      nsCOMPtr<nsIPropertyBag> channelProps =
++          do_QueryInterface(handoffChannel);
++      if (channelProps) {
++        nsCOMPtr<nsIVariant> marker;
++        if (NS_SUCCEEDED(channelProps->GetProperty(
++                u"cancelledByExtension"_ns, getter_AddRefs(marker))) &&
++            marker) {
++          claimedByExtension = true;
++        }
++        if (NS_SUCCEEDED(channelProps->GetProperty(
++                u"redirectedByExtension"_ns, getter_AddRefs(marker))) &&
++            marker) {
++          claimedByExtension = true;
++        }
++      }
 +      bool handoffTakes = false;
 +      nsCOMPtr<nsIRozeLynxHandoff> handoff =
 +          do_GetService("@bytewheel.org/handoff;1");
-+      if (handoff && !isPrivate &&
++      if (handoff && !isPrivate && NS_SUCCEEDED(channelStatus) &&
++          !claimedByExtension &&
 +          NS_SUCCEEDED(handoff->ShouldTakeDownload(
 +              urlSpec, mContentLength, handlerId, &handoffTakes)) &&
 +          handoffTakes && handlerId.Length()) {

@@ -59,9 +59,12 @@ interface nsIRozeLynxHandoff : nsISupports
 {
   /**
    * The gate.  true when the download should be handed off (mode on,
-   * size over the floor, URL not excluded, at least one available
-   * handler).  aHandlerId receives the id that takeDownload() will run,
-   * so the caller can report it.
+   * size over the floor, URL not excluded, at least one handler that
+   * can take a download right now - a builtin/cmd handler never probed
+   * this session counts as able, because the hand-off attempt itself
+   * is the check; the version-handshake probe NEVER runs on this path,
+   * or one download would call the manager twice).  aHandlerId receives
+   * the id that takeDownload() will run, so the caller can report it.
    */
   boolean shouldTakeDownload(in AUTF8String aURL, in long long aSize,
                              out AUTF8String aHandlerId);

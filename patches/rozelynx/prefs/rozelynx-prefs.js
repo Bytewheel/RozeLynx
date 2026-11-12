@@ -133,18 +133,26 @@ pref("network.dns.refresh_negative_addr_on_use", true);
 //   pref("rozelynx.downloads.handoff.exclude", "")
 //     Space/comma separated URL substrings that are never intercepted.
 //
-// The handler list, edited from Settings > General > Download hand-off or
-// here. THE ORDER IS THE PRIORITY: the first handler that accepts a
-// download gets it, and the rest are not tried. n is 0..15, and deleting
+// The handler list, edited from Settings > General > Download hand-off,
+// the RozeLynx extension's options page (Download managers) or here.
+// THE ORDER IS THE PRIORITY: the first handler that accepts a download
+// gets it, and the rest are not tried. n is 0..15, and deleting
 // the last row CLEARS its prefs rather than blanking them, so nothing is
 // left live in about:config that the editor no longer shows.
 //   pref("rozelynx.downloads.handler.<n>.id", "uget")
 //   pref("rozelynx.downloads.handler.<n>.args", "{url}")
 //     Only a cmd: handler uses args. {url} {filename} {referer} {ua}
-//     {cookies} are substituted per-token, so a url is always one argument
-//     however much whitespace or punctuation it carries. {cookies} expands
-//     to the path of a 0600 file the engine writes under the temp dir,
-//     because a manager that wants cookies wants to open a file.
+//     {cookies} {user} {password} are substituted per-token, so a url is
+//     always one argument however much whitespace or punctuation it
+//     carries. {cookies} expands to the path of a 0600 file the engine
+//     writes under the temp dir, because a manager that wants cookies
+//     wants to open a file. {user} and {password} expand to the HTTP
+//     auth identity the browser holds for the download (empty - and the
+//     token dropped - when it holds none); note a password substituted
+//     onto a command line is briefly visible in the process list, the
+//     one leak the cookie-file pattern exists to avoid, so prefer
+//     managers that read credentials from their own config when that
+//     matters to you.
 //   pref("rozelynx.downloads.handler.<n>.enabled", true)
 //
 //   pref("rozelynx.downloads.handoff.defer_to", "uget-integration@slgobinath")
@@ -154,6 +162,15 @@ pref("network.dns.refresh_negative_addr_on_use", true);
 //   pref("rozelynx.downloads.handoff.extensions", "{\"<id>\": true}")
 //     Probe cache the extension relay maintains (installed-and-enabled map
 //     for ext: handlers). Do not hand-edit; the relay rewrites it.
+//
+// Credentials: cookies AND the stored HTTP auth identity for the download
+// travel with every hand-off. The uget builtin drives uget-gtk directly
+// (--http-user/--http-password, the flags uget-integrator's own protocol
+// has no fields for) whenever the browser holds credentials for the URL;
+// cmd: handlers receive them through the {user} and {password} tokens.
+// The version-handshake probe never runs on the download path - the
+// hand-off attempt itself is the check - so one download is one call to
+// the manager, never two.
 //
 // Handler 0 is the uget builtin so a fresh profile keeps the behaviour this
 // feature shipped with; the list is meant to be edited from there.

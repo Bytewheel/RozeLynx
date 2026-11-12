@@ -68,6 +68,12 @@ struct HandoffHandler {
   nsCString args;    // raw args template (cmd: only)
   bool enabled = true;
   bool available = false;
+  // A builtin/cmd row that was never probed is optimistically available:
+  // the hand-off attempt itself is the check (a failure marks the row
+  // unavailable), so the download path never spawns the version
+  // handshake - which would be a second call to the very manager the
+  // download is about to be handed to.
+  bool probed = false;
   nsCString detail;  // probe result, shown by the Settings editor
 
   bool IsBuiltin() const { return kind.EqualsLiteral("builtin"); }
@@ -121,6 +127,15 @@ class RozeLynxHandoff final : public nsIRozeLynxHandoff,
   nsCString mDeferTo;
   bool mHavePrefs = false;
   bool mPrefsDirty = true;  // re-read + re-probe on next gate pass
+  // Probe invalidation is SEPARATE from the pref re-read: the relay
+  // rewrites rozelynx.downloads.handoff.extensions whenever an add-on
+  // changes state and mode/min-size edits change nothing about
+  // availability, and a probe SPAWNS uget-integrator.  Only a handler-row
+  // change (or an explicit refreshProbes()) re-probes; ReadPrefs()
+  // recomputes the row signature that answers "did the rows change".
+  bool mProbesDirty = true;
+  bool mProbedOnce = false;
+  nsCString mHandlersSignature;
 
   // ext: availability cache: rozelynx.downloads.handoff.extensions is a
   // JSON object {"<extension-id>": true|false} the RozeLynx extension
@@ -134,6 +149,15 @@ class RozeLynxHandoff final : public nsIRozeLynxHandoff,
 
   bool ModeEnabled();           // resolves 'auto' against availability
   bool IsExcluded(const nsACString& aURL) const;
+  // Whether a row may take a download RIGHT NOW: enabled, and either
+  // available or (builtin/cmd) never probed yet.  ext: rows answer from
+  // the ext-state cache, which is their live probe.
+  bool CanTakeNow(const HandoffHandler& aHandler) const;
+  // Cache a hand-off attempt's outcome on the row (builtin/cmd only): a
+  // dead handler stops being retried without ever spawning the version
+  // handshake for it.
+  void MarkHandlerOutcome(HandoffHandler& aHandler, bool aTook,
+                          const nsACString& aDetail);
 
   // ── probing ────────────────────────────────────────────────────────
   void ProbeAll();
@@ -158,10 +182,13 @@ class RozeLynxHandoff final : public nsIRozeLynxHandoff,
                                      nsACString& aOutValue);
   bool RunUget(const nsACString& aURL, const nsACString& aFilename,
                const nsACString& aReferer, const nsACString& aCookiesText,
-               const nsACString& aUserAgent, int64_t aSize, nsCString& aError);
+               const nsACString& aUserAgent, int64_t aSize,
+               const nsACString& aUser, const nsACString& aPassword,
+               nsCString& aError);
   bool RunCmd(const HandoffHandler& aHandler, const nsACString& aURL,
               const nsACString& aFilename, const nsACString& aReferer,
               const nsACString& aCookiesText, const nsACString& aUserAgent,
+              const nsACString& aUser, const nsACString& aPassword,
               nsCString& aError, pid_t& aOutPid);
   bool RunExt(const nsACString& aExtId, const nsACString& aURL,
               const nsACString& aFilename, const nsACString& aReferer,
@@ -174,11 +201,16 @@ class RozeLynxHandoff final : public nsIRozeLynxHandoff,
   bool mExtAccepted = false;
   nsCString mExtError;
 
-  // ── cookies ────────────────────────────────────────────────────────
+  // ── cookies / credentials ──────────────────────────────────────────
   // Netscape cookie-file text for the URL's host, same field order the
   // old extension wrote (and uget-integrator's parser reads).
   nsresult CollectCookies(nsIURI* aURI, nsIChannel* aChannel,
                           nsACString& aOutText);
+  // HTTP auth identity the browser holds for the URL (nsIHttpAuthManager,
+  // path-keyed like the browser's own lookup): what the download would
+  // have been fetched with, handed to the manager alongside the cookies.
+  nsresult CollectAuthIdentity(nsIURI* aURI, nsACString& aOutUser,
+                               nsACString& aOutPassword);
   nsresult WriteCookieFile(const nsACString& aText, nsACString& aOutPath);
   void SweepStaleCookieFiles();
   nsCOMPtr<nsIFile> mCookieDir;
@@ -191,7 +223,9 @@ class RozeLynxHandoff final : public nsIRozeLynxHandoff,
                                const nsACString& aFilename,
                                const nsACString& aReferer,
                                const nsACString& aCookiePath,
-                               const nsACString& aUserAgent);
+                               const nsACString& aUserAgent,
+                               const nsACString& aUser,
+                               const nsACString& aPassword);
   static nsCString UserAgentLike();
 };
 

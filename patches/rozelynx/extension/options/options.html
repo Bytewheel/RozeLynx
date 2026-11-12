@@ -113,6 +113,53 @@
   <div class="ed-status" id="opt-ua-status"></div>
 </div>
 
+<!--
+  Download managers: the extension-side editor for the browser's download
+  hand-off engine (Settings > General > Download hand-off,
+  uriloader/exthandler/rozelynx-handoff/). The rows, mode and filters are
+  the same rozelynx.downloads.* prefs the engine reads - about:config
+  stays the source of truth; this card is the same editor where the
+  extension's own settings live. Availability comes from the engine's
+  probes via the rozelynxHandoff experiment API, so what it shows can
+  never disagree with what the gate runs.
+-->
+<h2 id="handoff-heading" hidden>Download managers</h2>
+<div class="card card-hidden" id="handoff-card">
+  <div class="row" id="handoff-mode-row">
+    <span style="font-size:12px; color:var(--fg-muted); flex:0 0 auto;">Hand downloads off</span>
+    <select id="opt-handoff-mode">
+      <option value="auto">when a handler is available</option>
+      <option value="true">always</option>
+      <option value="false">never</option>
+    </select>
+  </div>
+  <div class="row" id="handoff-minsize-row">
+    <span style="font-size:12px; color:var(--fg-muted); flex:0 0 auto;">Only above</span>
+    <input type="text" id="opt-handoff-min-size" inputmode="numeric" spellcheck="false">
+    <span style="font-size:12px; color:var(--fg-muted); flex:0 0 auto;">KB</span>
+  </div>
+  <div class="empty" id="opt-handoff-empty" hidden>
+    No handlers. Downloads stay in the browser.
+  </div>
+  <div id="opt-handoff-list"></div>
+  <div class="row-add">
+    <input type="text" id="opt-handoff-new-id"
+           placeholder="uget, ext:&lt;id&gt; or cmd:&lt;program&gt;" spellcheck="false">
+    <button type="button" id="opt-handoff-add">Add</button>
+  </div>
+  <div class="row" id="handoff-exclude-row" style="margin-top:8px;">
+    <span style="font-size:12px; color:var(--fg-muted); flex:0 0 auto;">Never hand off</span>
+    <input type="text" id="opt-handoff-exclude"
+           placeholder="URL substrings, space or comma separated" spellcheck="false">
+  </div>
+  <div class="row" id="handoff-defer-row">
+    <span style="font-size:12px; color:var(--fg-muted); flex:0 0 auto;">Defer to add-on</span>
+    <input type="text" id="opt-handoff-defer-to"
+           placeholder="extension id that owns downloads instead" spellcheck="false">
+  </div>
+  <div class="ed-status" id="opt-handoff-status"></div>
+</div>
+
 <p class="status" id="status">Loading features...</p>
 <script src="options.js"></script>
 </body>

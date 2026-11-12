@@ -12,6 +12,20 @@
           { "name": "accepted", "type": "boolean" },
           { "name": "error", "type": "string" }
         ]
+      },
+      {
+        "name": "getHandlers",
+        "type": "function",
+        "async": true,
+        "description": "Read the download hand-off handler rows with their probe states, as [{index, id, kind, label, hint, args, enabled, available, detail}] - the same rows the Settings > General editor shows. Throws when this build has no hand-off engine (USE=download-handoff off), which is how the options page decides to hide its download-managers section.",
+        "parameters": []
+      },
+      {
+        "name": "refreshProbes",
+        "type": "function",
+        "async": true,
+        "description": "Re-run the availability probes (uget-integrator version handshake, cmd: PATH lookups) so the next getHandlers() reports fresh states. Throws when this build has no hand-off engine.",
+        "parameters": []
       }
     ],
     "events": [

@@ -661,7 +661,303 @@
     document.head.appendChild(script);
   }
 
+  // ── download managers editor ───────────────────────────────────────
+  // The browser-side hand-off engine's prefs, edited from the extension:
+  // the SAME rozelynx.downloads.* rows the Settings > General editor and
+  // about:config see, with the engine's own probe states for display.
+
+  function initHandoffEditor() {
+    var svc = (typeof browser !== 'undefined' && browser.rozelynxHandoff) || null;
+    var prefsApi = (typeof browser !== 'undefined' && browser.rozelynxPrefs) || null;
+    if (!svc || !svc.getHandlers || !prefsApi || !prefsApi.setPrefs) {
+      return;  // a build without the experiments: no section at all
+    }
+
+    var heading = document.getElementById('handoff-heading');
+    var card = document.getElementById('handoff-card');
+    var modeSel = document.getElementById('opt-handoff-mode');
+    var minSize = document.getElementById('opt-handoff-min-size');
+    var list = document.getElementById('opt-handoff-list');
+    var empty = document.getElementById('opt-handoff-empty');
+    var newId = document.getElementById('opt-handoff-new-id');
+    var addBtn = document.getElementById('opt-handoff-add');
+    var exclude = document.getElementById('opt-handoff-exclude');
+    var deferTo = document.getElementById('opt-handoff-defer-to');
+    var status = document.getElementById('opt-handoff-status');
+
+    var PREF_MODE = 'rozelynx.downloads.handoff.enabled';
+    var PREF_MIN_SIZE = 'rozelynx.downloads.handoff.min_size';
+    var PREF_EXCLUDE = 'rozelynx.downloads.handoff.exclude';
+    var PREF_DEFER_TO = 'rozelynx.downloads.handoff.defer_to';
+    var PREF_HANDLER = 'rozelynx.downloads.handler.';
+    var MAX_HANDLERS = 16;
+    var DEFAULT_MIN_SIZE = 307200;
+
+    var handlers = [];
+
+    function kindBadge(kind) {
+      if (kind === 'builtin') return 'built in';
+      if (kind === 'ext') return 'extension';
+      if (kind === 'cmd') return 'program';
+      return 'unknown';
+    }
+
+    function schemaRow(h) {
+      h = h || {};
+      return {
+        id: h.id || '',
+        args: h.args || '',
+        enabled: h.enabled !== false,
+      };
+    }
+
+    function readRows() {
+      // getHandlers() re-probes when the rows changed, so availability
+      // shown here is the engine's own answer, never a re-implementation.
+      return Promise.resolve(svc.getHandlers()).then(function(rows) {
+        handlers = rows || [];
+      });
+    }
+
+    function readSettings() {
+      return Promise.resolve(
+        prefsApi.getPrefs([PREF_MODE, PREF_MIN_SIZE, PREF_EXCLUDE, PREF_DEFER_TO])
+      ).then(function(prefs) {
+        var byName = {};
+        (prefs || []).forEach(function(p) {
+          if (p && p.type !== 'missing' && p.value !== null) {
+            byName[p.name] = p.value;
+          }
+        });
+        modeSel.value = byName[PREF_MODE] === 'true' ||
+                        byName[PREF_MODE] === 'false'
+          ? byName[PREF_MODE] : 'auto';
+        var bytes = parseInt(byName[PREF_MIN_SIZE], 10);
+        if (isNaN(bytes) || bytes < 0) bytes = DEFAULT_MIN_SIZE;
+        minSize.value = String(Math.round(bytes / 1024));
+        exclude.value = byName[PREF_EXCLUDE] || '';
+        deferTo.value = byName[PREF_DEFER_TO] || '';
+      });
+    }
+
+    function setStatusLine() {
+      var live = handlers.filter(function(h) {
+        return h.enabled && h.available;
+      }).length;
+      var mode = modeSel.value;
+      showEdStatus(status,
+        handlers.length + ' configured, ' + live + ' can take a download' +
+        (mode === 'true' || (mode === 'auto' && live > 0)
+          ? ' - hand-off is ON'
+          : ' - hand-off is off'));
+    }
+
+    function render() {
+      list.textContent = '';
+      empty.hidden = handlers.length > 0;
+
+      handlers.forEach(function(h, i) {
+        var row = document.createElement('div');
+        row.className = 'row';
+
+        var id = document.createElement('input');
+        id.type = 'text';
+        id.spellcheck = false;
+        id.value = h.id;
+        id.title = h.hint + (h.available ? '' : ' - ' + h.detail);
+        id.addEventListener('change', function() {
+          var value = id.value.trim();
+          var next = handlers.map(schemaRow);
+          if (!value) {
+            next.splice(i, 1);
+          } else {
+            next[i].id = value;
+          }
+          writeRows(next);
+        });
+        row.appendChild(id);
+
+        var args = document.createElement('input');
+        args.type = 'text';
+        args.spellcheck = false;
+        args.value = h.args || '';
+        args.disabled = h.kind !== 'cmd';
+        args.placeholder = h.kind === 'cmd' ? '{url}' : '-';
+        args.title = h.kind === 'cmd'
+          ? 'Args for the program. {url} {filename} {referer} {ua} {cookies} {user} {password}'
+          : 'Only a cmd: handler takes arguments';
+        args.addEventListener('change', function() {
+          var next = handlers.map(schemaRow);
+          next[i].args = args.value;
+          writeRows(next);
+        });
+        row.appendChild(args);
+
+        var on = document.createElement('input');
+        on.type = 'checkbox';
+        on.checked = h.enabled;
+        on.title = 'Enable this handler';
+        on.addEventListener('change', function() {
+          var next = handlers.map(schemaRow);
+          next[i].enabled = on.checked;
+          writeRows(next);
+        });
+        row.appendChild(on);
+
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = 'X';
+        del.title = 'Delete this handler';
+        del.addEventListener('click', function() {
+          var next = handlers.map(schemaRow);
+          next.splice(i, 1);
+          writeRows(next);
+        });
+        row.appendChild(del);
+
+        list.appendChild(row);
+
+        // The second line per handler: kind, position, and whether it can
+        // take a download right now - an unavailable row must not look
+        // identical to a working one.
+        var note = document.createElement('div');
+        note.className = 'empty';
+        note.style.padding = '0 0 4px 0';
+        note.textContent =
+          (i + 1) + '. ' + kindBadge(h.kind) +
+          (h.enabled ? '' : ' - disabled') +
+          ' - ' + h.detail;
+        list.appendChild(note);
+      });
+
+      setStatusLine();
+    }
+
+    function writeRows(next) {
+      if (next.length > MAX_HANDLERS) {
+        showEdStatus(status,
+          'At most ' + MAX_HANDLERS + ' handlers, got ' + next.length + '.', true);
+        return;
+      }
+      var toSet = {};
+      var toClear = [];
+      for (var i = 0; i < MAX_HANDLERS; i++) {
+        var base = PREF_HANDLER + i + '.';
+        if (i >= next.length) {
+          toClear.push(base + 'id', base + 'args', base + 'enabled');
+          continue;
+        }
+        toSet[base + 'id'] = next[i].id;
+        toSet[base + 'args'] = next[i].args || '';
+        toSet[base + 'enabled'] = next[i].enabled !== false;
+      }
+      Promise.resolve(prefsApi.setPrefs(toSet))
+        .then(function(res) {
+          if (res && res.ok === false) {
+            showEdStatus(status,
+              (res.error) || 'Could not save the handlers.', true);
+          }
+          return prefsApi.clearPrefs(toClear);
+        })
+        .then(refresh)
+        .catch(function(e) {
+          showEdStatus(status, 'Could not save the handlers: ' +
+            ((e && e.message) || e), true);
+        });
+    }
+
+    function refresh() {
+      return readRows().then(render).catch(function(e) {
+        showEdStatus(status, 'Could not read the handlers: ' +
+          ((e && e.message) || e), true);
+      });
+    }
+
+    modeSel.addEventListener('change', function() {
+      Promise.resolve(prefsApi.setPrefs(
+        { 'rozelynx.downloads.handoff.enabled': modeSel.value }
+      )).then(setStatusLine).catch(function(e) {
+        showEdStatus(status, 'Could not save the mode: ' +
+          ((e && e.message) || e), true);
+      });
+    });
+
+    minSize.addEventListener('change', function() {
+      var kb = parseInt(minSize.value, 10);
+      if (isNaN(kb) || kb < 0) {
+        kb = Math.round(DEFAULT_MIN_SIZE / 1024);
+        minSize.value = String(kb);
+      }
+      Promise.resolve(prefsApi.setPrefs(
+        { 'rozelynx.downloads.handoff.min_size': kb * 1024 }
+      )).catch(function(e) {
+        showEdStatus(status, 'Could not save the size floor: ' +
+          ((e && e.message) || e), true);
+      });
+    });
+
+    exclude.addEventListener('change', function() {
+      Promise.resolve(prefsApi.setPrefs(
+        { 'rozelynx.downloads.handoff.exclude': exclude.value }
+      )).catch(function(e) {
+        showEdStatus(status, 'Could not save the exclusions: ' +
+          ((e && e.message) || e), true);
+      });
+    });
+
+    deferTo.addEventListener('change', function() {
+      Promise.resolve(prefsApi.setPrefs(
+        { 'rozelynx.downloads.handoff.defer_to': deferTo.value.trim() }
+      )).catch(function(e) {
+        showEdStatus(status, 'Could not save the defer-to add-on: ' +
+          ((e && e.message) || e), true);
+      });
+    });
+
+    addBtn.addEventListener('click', function() {
+      var value = newId.value.trim();
+      if (!value) {
+        showEdStatus(status,
+          'Type a handler id first: uget, ext:<id> or cmd:<program>.', true);
+        return;
+      }
+      if (handlers.length >= MAX_HANDLERS) {
+        showEdStatus(status,
+          'The list is full (' + MAX_HANDLERS + ' is the limit).', true);
+        return;
+      }
+      // A cmd: handler with no template would hand over a bare program
+      // with no url, so the obvious default is filled in.
+      var next = handlers.map(schemaRow);
+      next.push({
+        id: value,
+        args: value.indexOf('cmd:') === 0 ? '{url}' : '',
+        enabled: true,
+      });
+      newId.value = '';
+      writeRows(next);
+    });
+    newId.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addBtn.click();
+      }
+    });
+
+    // The engine must answer before the section appears: on a build
+    // without USE=download-handoff the experiment's getService throws,
+    // which is exactly the "not in this build" signal.
+    Promise.resolve(svc.getHandlers()).then(function() {
+      heading.hidden = false;
+      card.classList.remove('card-hidden');
+      return readSettings().then(refresh);
+    }).catch(function() {
+      // No engine in this build: the section stays hidden.
+    });
+  }
+
   loadFeatures();
   initNetifaceEditor();
   initUaEditor();
+  initHandoffEditor();
 })();

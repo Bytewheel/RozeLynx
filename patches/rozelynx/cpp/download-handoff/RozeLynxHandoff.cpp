@@ -13,6 +13,7 @@
 #include "nsIChannel.h"
 #include "nsICookieManager.h"
 #include "nsIFile.h"
+#include "nsIHttpAuthManager.h"
 #include "nsIHttpProtocolHandler.h"
 #include "nsIObserverService.h"
 #include "nsIPrefBranch.h"
@@ -213,10 +214,29 @@ NS_IMETHODIMP
 RozeLynxHandoff::Observe(nsISupports* aSubject, const char* aTopic,
                          const char16_t* aData) {
   if (!strcmp(aTopic, NS_PREFBRANCH_PREFCHANGE_TOPIC_ID)) {
-    mPrefsDirty = true;  // re-read + re-probe on the next gate pass
+    if (aData) {
+      HandlePrefChange(NS_ConvertUTF16toUTF8(aData));
+    } else {
+      mPrefsDirty = true;
+    }
   }
   return NS_OK;
 }
+
+bool RozeLynxHandoff::HandlePrefChange(const nsACString& aName) {
+  // Every change re-reads the prefs (cheap), but only a HANDLER-ROW
+  // change re-probes: the relay rewrites ...handoff.extensions whenever
+  // an add-on changes state, mode/min-size/defer edits change nothing
+  // about availability, and a probe SPAWNS uget-integrator - on the
+  // download path that is a second call to the same manager the hand-off
+  // itself is about to make.
+  mPrefsDirty = true;
+  if (StringBeginsWith(aName, nsDependentCString(kPrefHandlerId))) {
+    mProbesDirty = true;
+  }
+  return true;
+}
+
 
 // ── prefs / config ────────────────────────────────────────────────────
 
@@ -300,7 +320,7 @@ void RozeLynxHandoff::ReadPrefs() {
       h.kind = "builtin"_ns;
       h.label = "uGet (uget-gtk)"_ns;
       h.hint = "built in: speaks uget-integrator's own stdio protocol, "
-               "with cookies"_ns;
+               "with cookies and stored HTTP credentials"_ns;
     } else if (StringBeginsWith(id, "cmd:"_ns)) {
       h.kind = "cmd"_ns;
       h.label = Substring(id, 4);
@@ -333,6 +353,25 @@ void RozeLynxHandoff::ReadPrefs() {
     }
     h.enabled = enabled;
     mHandlers.AppendElement(std::move(h));
+  }
+
+  // The probe set depends only on the configured rows: compare the row
+  // signature after every parse so a row edit re-probes while a mode or
+  // ext-state edit does not (runtime availability marks are not part of
+  // it - a re-read after a mode edit keeps what the last hand-off
+  // learned about its handlers).
+  nsAutoCString signature;
+  for (const auto& h : mHandlers) {
+    signature.Append(h.id);
+    signature.Append('\x1f');
+    signature.Append(h.args);
+    signature.Append('\x1f');
+    signature.Append(h.enabled ? '1' : '0');
+    signature.Append('\x1e');
+  }
+  if (!signature.Equals(mHandlersSignature)) {
+    mHandlersSignature = signature;
+    mProbesDirty = true;
   }
 
   ReadExtStates();
@@ -391,11 +430,49 @@ bool RozeLynxHandoff::ModeEnabled() {
   if (mMode.EqualsLiteral("true")) return true;
   if (mMode.EqualsLiteral("false")) return false;
   for (const auto& h : mHandlers) {
-    if (h.enabled && h.available) {
+    if (CanTakeNow(h)) {
       return true;
     }
   }
   return false;
+}
+
+bool RozeLynxHandoff::CanTakeNow(const HandoffHandler& aHandler) const {
+  if (!aHandler.enabled) {
+    return false;
+  }
+  if (aHandler.IsExt()) {
+    // The ext-state cache is the live probe for ext: rows (the relay
+    // rewrites it on every add-on change); no handshake exists to run.
+    nsAutoCString extId(Substring(aHandler.id, 4));
+    for (const auto& st : mExtStates) {
+      if (st.id == extId) {
+        return st.enabled;
+      }
+    }
+    return false;
+  }
+  if (!aHandler.IsBuiltin() && !aHandler.IsCmd()) {
+    return false;  // "unknown": shown in the editor, never run
+  }
+  return aHandler.available || !aHandler.probed;
+}
+
+void RozeLynxHandoff::MarkHandlerOutcome(HandoffHandler& aHandler, bool aTook,
+                                         const nsACString& aDetail) {
+  // The hand-off attempt is the authoritative probe for builtin/cmd rows:
+  // a dead handler stops being retried without the version handshake
+  // ever being spawned for it.  ext: availability stays the relay's
+  // ext-state cache - an extension declining one download is not
+  // "unavailable".
+  if (!aHandler.IsBuiltin() && !aHandler.IsCmd()) {
+    return;
+  }
+  aHandler.probed = true;
+  aHandler.available = aTook;
+  aHandler.detail =
+      aTook ? "took the last download"_ns
+            : (aDetail.IsEmpty() ? "declined or failed"_ns : aDetail);
 }
 
 bool RozeLynxHandoff::IsExcluded(const nsACString& aURL) const {
@@ -565,6 +642,7 @@ bool RozeLynxHandoff::ProbeUget(nsCString& aOutDetail) {
 }
 
 void RozeLynxHandoff::ProbeOne(HandoffHandler& aHandler) {
+  aHandler.probed = true;
   if (!aHandler.enabled) {
     aHandler.available = false;
     aHandler.detail = "disabled";
@@ -612,6 +690,8 @@ void RozeLynxHandoff::ProbeAll() {
   for (auto& h : mHandlers) {
     ProbeOne(h);
   }
+  mProbedOnce = true;
+  mProbesDirty = false;
 }
 
 // ── nsIRozeLynxHandoff ─────────────────────────────────────────────────
@@ -621,6 +701,11 @@ RozeLynxHandoff::GetHandlers(
     nsTArray<RefPtr<nsIRozeLynxHandoffHandler>>& aOut) {
   if (mPrefsDirty || !mHavePrefs) {
     ReadPrefs();
+  }
+  // The editors get real availability: probe when the rows changed or
+  // this is the first read.  A clean read returns the cached states -
+  // which include what the last hand-off attempt learned.
+  if (mProbesDirty || !mProbedOnce) {
     ProbeAll();
   }
   aOut.Clear();
@@ -664,8 +749,12 @@ RozeLynxHandoff::ShouldTakeDownload(const nsACString& aURL, int64_t aSize,
   }
   if (mPrefsDirty || !mHavePrefs) {
     ReadPrefs();
-    ProbeAll();
   }
+  // NO ProbeAll here or in TakeDownload: the probe spawns uget-integrator
+  // (which itself execs uget-gtk --version), so probing inline in the
+  // gate means calling the download manager twice for one download.
+  // Availability comes from the cache, the hand-off attempt itself
+  // updates it, and refreshProbes()/GetHandlers re-probe deliberately.
   // Stand down for another download-manager integration when one is named
   // AND actually enabled: deferring blindly would leave every download to
   // the browser while the pref reads "on", the exact failure the pref
@@ -689,7 +778,7 @@ RozeLynxHandoff::ShouldTakeDownload(const nsACString& aURL, int64_t aSize,
     return NS_OK;
   }
   for (const auto& h : mHandlers) {
-    if (h.enabled && h.available) {
+    if (CanTakeNow(h)) {
       aHandlerId = h.id;
       *aTook = true;
       return NS_OK;
@@ -706,7 +795,6 @@ RozeLynxHandoff::TakeDownload(const nsACString& aURL, const nsACString& aFilenam
   aTookVia.Truncate();
   if (mPrefsDirty || !mHavePrefs) {
     ReadPrefs();
-    ProbeAll();
   }
   if (!ModeEnabled()) {
     return NS_OK;
@@ -717,6 +805,11 @@ RozeLynxHandoff::TakeDownload(const nsACString& aURL, const nsACString& aFilenam
     CollectCookies(aChannelURI, aChannel, cookiesText);
   }
   nsCString ua = UserAgentLike();
+  nsAutoCString authUser;
+  nsAutoCString authPassword;
+  if (aChannelURI) {
+    CollectAuthIdentity(aChannelURI, authUser, authPassword);
+  }
 
   // Ordered and SEQUENTIAL on purpose: parallel attempts would hand the
   // same download to two managers, and the order is the user's stated
@@ -724,22 +817,25 @@ RozeLynxHandoff::TakeDownload(const nsACString& aURL, const nsACString& aFilenam
   // not skipped - the timeout bound inside each Run* is the bound on being
   // that slow.
   for (auto& h : mHandlers) {
-    if (!h.enabled || !h.available) {
+    if (!CanTakeNow(h)) {
       continue;
     }
     nsCString error;
     bool took = false;
     if (h.IsBuiltin()) {
-      took = RunUget(aURL, aFilename, aReferer, cookiesText, ua, aSize, error);
+      took = RunUget(aURL, aFilename, aReferer, cookiesText, ua, aSize,
+                     authUser, authPassword, error);
     } else if (h.IsCmd()) {
       pid_t pid = -1;
-      took = RunCmd(h, aURL, aFilename, aReferer, cookiesText, ua, error, pid);
+      took = RunCmd(h, aURL, aFilename, aReferer, cookiesText, ua, authUser,
+                    authPassword, error, pid);
     } else if (h.IsExt()) {
       nsAutoCString extId(Substring(h.id, 4));
       took = RunExt(extId, aURL, aFilename, aReferer, error);
     } else {
       continue;
     }
+    MarkHandlerOutcome(h, took, error);
     if (took) {
       aTookVia = h.id;
       return NS_OK;
@@ -889,7 +985,49 @@ bool RozeLynxHandoff::RunUget(const nsACString& aURL, const nsACString& aFilenam
                               const nsACString& aReferer,
                               const nsACString& aCookiesText,
                               const nsACString& aUserAgent, int64_t aSize,
-                              nsCString& aError) {
+                              const nsACString& aUser,
+                              const nsACString& aPassword, nsCString& aError) {
+  if (!aUser.IsEmpty() || !aPassword.IsEmpty()) {
+    // uget-integrator's message has no credential fields, but uget-gtk
+    // itself takes them (--http-user/--http-password, UgetOption.c).  With
+    // credentials the builtin drives uget-gtk DIRECTLY, passing the same
+    // flags the integrator would, so an authenticated download reaches
+    // uGet instead of dying on the 401 the browser's identity would have
+    // answered.  Spawn success means "took" - the same trust level a
+    // cmd: handler has, and the price of not embedding user:pass in the
+    // URL uGet would store in its list.
+    SweepStaleCookieFiles();
+    nsAutoCString cookiePath;
+    if (!aCookiesText.IsEmpty()) {
+      nsresult rv = WriteCookieFile(aCookiesText, cookiePath);
+      if (NS_FAILED(rv)) {
+        aError = "could not write the cookie file"_ns;
+        return false;
+      }
+    }
+    nsTArray<nsCString> argv;
+    auto addArg = [&argv](const char* aFlag, const nsACString& aValue) {
+      if (!aValue.IsEmpty()) {
+        nsAutoCString arg;
+        arg.AssignASCII(aFlag);
+        arg.Append(aValue);
+        argv.AppendElement(arg);
+      }
+    };
+    addArg("--http-referer=", aReferer);
+    addArg("--filename=", aFilename);
+    addArg("--http-cookie-file=", cookiePath);
+    addArg("--http-user=", aUser);
+    addArg("--http-password=", aPassword);
+    argv.AppendElement(aURL);
+    SpawnResult sp = SpawnDetached("uget-gtk"_ns, argv, false);
+    if (!sp.ok) {
+      aError = sp.error;
+      return false;
+    }
+    return true;
+  }
+
   // The message is the one uget Integration's own extension sends,
   // including the capitalised key names, because uget-integrator indexes
   // them literally and a missing key is a KeyError - every one has to be
@@ -1009,12 +1147,16 @@ bool RozeLynxHandoff::SubstituteTokens(nsTArray<nsCString>& aArgv,
                                        const nsACString& aFilename,
                                        const nsACString& aReferer,
                                        const nsACString& aCookiePath,
-                                       const nsACString& aUserAgent) {
+                                       const nsACString& aUserAgent,
+                                       const nsACString& aUser,
+                                       const nsACString& aPassword) {
   // A CLOSED placeholder set: an unknown one is an error rather than a
   // literal, because a template that silently does not expand is a handler
   // that silently downloads nothing. A token that expands to nothing is
   // DROPPED rather than passed empty, so `-o {filename} {url}` does what it
-  // looks like when there is no filename to suggest.
+  // looks like when there is no filename to suggest - and
+  // `--http-user={user} --http-passwd={password}` collapses to nothing on
+  // an unauthenticated download.
   nsTArray<nsCString> out;
   for (auto& tok : aArgv) {
     nsAutoCString next;
@@ -1035,6 +1177,10 @@ bool RozeLynxHandoff::SubstituteTokens(nsTArray<nsCString>& aArgv,
           next.Append(aCookiePath);
         } else if (placeholder.EqualsLiteral("ua")) {
           next.Append(aUserAgent);
+        } else if (placeholder.EqualsLiteral("user")) {
+          next.Append(aUser);
+        } else if (placeholder.EqualsLiteral("password")) {
+          next.Append(aPassword);
         } else {
           return false;  // unknown placeholder
         }
@@ -1055,7 +1201,9 @@ bool RozeLynxHandoff::RunCmd(const HandoffHandler& aHandler,
                              const nsACString& aURL, const nsACString& aFilename,
                              const nsACString& aReferer,
                              const nsACString& aCookiesText,
-                             const nsACString& aUserAgent, nsCString& aError,
+                             const nsACString& aUserAgent,
+                             const nsACString& aUser,
+                             const nsACString& aPassword, nsCString& aError,
                              pid_t& aOutPid) {
   nsAutoCString program(Substring(aHandler.id, 4));
   nsAutoCString path;
@@ -1083,7 +1231,7 @@ bool RozeLynxHandoff::RunCmd(const HandoffHandler& aHandler,
   }
   if (!SplitArgsTemplate(tmpl, argv) ||
       !SubstituteTokens(argv, aURL, aFilename, aReferer, cookiePath,
-                        aUserAgent)) {
+                        aUserAgent, aUser, aPassword)) {
     aError = "the args template does not parse"_ns;
     return false;
   }
@@ -1152,7 +1300,52 @@ bool RozeLynxHandoff::RunExt(const nsACString& aExtId, const nsACString& aURL,
   return true;
 }
 
-// ── cookies ─────────────────────────────────────────────────────────────
+// ── cookies / credentials ─────────────────────────────────────────────
+
+nsresult RozeLynxHandoff::CollectAuthIdentity(nsIURI* aURI,
+                                              nsACString& aOutUser,
+                                              nsACString& aOutPassword) {
+  // The HTTP auth identity the browser holds for this URL - what the
+  // download request itself would have been sent with.  Path-keyed like
+  // the browser's own lookup (GetAuthEntryForPath), so the realm/path
+  // specificity Necko uses is preserved; only non-private downloads are
+  // ever handed off, so the public cache is the right one to read.
+  aOutUser.Truncate();
+  aOutPassword.Truncate();
+  nsCOMPtr<nsIHttpAuthManager> auth =
+      do_GetService(NS_HTTPAUTHMANAGER_CONTRACTID);
+  if (!auth || !aURI) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  nsAutoCString scheme;
+  nsAutoCString host;
+  nsAutoCString path;
+  if (NS_FAILED(aURI->GetScheme(scheme)) ||
+      NS_FAILED(aURI->GetHost(host)) || host.IsEmpty() ||
+      NS_FAILED(aURI->GetFilePath(path))) {
+    return NS_OK;
+  }
+  int32_t port = -1;
+  if (NS_FAILED(aURI->GetPort(&port)) || port == -1) {
+    port = scheme.EqualsLiteral("https") ? 443 : 80;
+  }
+  nsAutoString domain;
+  nsAutoString user;
+  nsAutoString password;
+  if (NS_SUCCEEDED(auth->GetAuthIdentity(scheme, host, port, ""_ns, ""_ns,
+                                         path, domain, user, password,
+                                         false, nullptr))) {
+    if (!domain.IsEmpty() && !user.IsEmpty()) {
+      // NTLM-style DOMAIN\user, the shape managers and curl accept.
+      domain.AppendLiteral("\\");
+      domain.Append(user);
+      user = domain;
+    }
+    aOutUser = NS_ConvertUTF16toUTF8(user);
+    aOutPassword = NS_ConvertUTF16toUTF8(password);
+  }
+  return NS_OK;
+}
 
 nsresult RozeLynxHandoff::CollectCookies(nsIURI* aURI, nsIChannel* aChannel,
                                          nsACString& aOutText) {

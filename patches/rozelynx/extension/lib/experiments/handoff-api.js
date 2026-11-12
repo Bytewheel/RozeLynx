@@ -7,7 +7,7 @@
  * extension carries a tiny relay module (modules/handoff-relay/) whose
  * ONLY job is to forward the download payload and report the answer.
  *
- * This side bridges the browser observer to the relay:
+ * This side bridges the browser to the extension:
  *   - the engine fires the "rozelynx-handoff-ext" observer with a JSON
  *     payload and spins the main loop, bounded;
  *   - onHandoffRequest (a PERSISTED event: the MV3 event page may be
@@ -15,6 +15,11 @@
  *     the relay;
  *   - respond() calls back into the engine (nsIRozeLynxHandoff::
  *     respondExtHandler) and unblocks the spin.
+ *   - getHandlers()/refreshProbes() expose the engine's handler rows and
+ *     probes to the extension's options page (the download-managers
+ *     section), the same rows the Settings > General editor shows; both
+ *     throw on a build without the engine, which is how the options page
+ *     knows to hide the section.
  *
  * The experiment sandbox provides ExtensionAPIPersistent, ExtensionCommon,
  * Cc, Ci and ChromeUtils as globals.
@@ -106,6 +111,38 @@ this.rozelynxHandoff = class extends ExtensionAPIPersistent {
             // fires the observer, so this is unreachable in practice; the
             // answer is simply dropped.
           }
+          return { ok: true };
+        },
+
+        // The options page's download-managers section reads the same
+        // rows the Settings > General editor does. getService throws on a
+        // build without the engine, which is the signal the options page
+        // uses to hide the section (the netiface pattern).
+        async getHandlers() {
+          const svc = Cc["@bytewheel.org/handoff;1"].getService(
+            Ci.nsIRozeLynxHandoff
+          );
+          const out = [];
+          for (const h of svc.handlers) {
+            out.push({
+              index: h.index,
+              id: h.id,
+              kind: h.kind,
+              label: h.label,
+              hint: h.hint,
+              args: h.args,
+              enabled: h.enabled,
+              available: h.available,
+              detail: h.detail,
+            });
+          }
+          return out;
+        },
+
+        async refreshProbes() {
+          Cc["@bytewheel.org/handoff;1"]
+            .getService(Ci.nsIRozeLynxHandoff)
+            .refreshProbes();
           return { ok: true };
         },
 

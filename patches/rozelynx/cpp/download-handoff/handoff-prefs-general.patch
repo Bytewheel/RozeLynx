@@ -18,7 +18,7 @@
    data-srd-groupid="applications">
 --- a/browser/locales/en-US/browser/preferences/preferences.ftl
 +++ b/browser/locales/en-US/browser/preferences/preferences.ftl
-@@ -2807,3 +2807,25 @@
+@@ -2807,3 +2807,28 @@
  # use the browser. "Share" here means recommending or referring the browser
  referrals-link2 =
    .label = Share { -brand-product-name }
@@ -43,4 +43,7 @@
 +    “uget” is built in and speaks uget-integrator’s own protocol. “cmd:aria2c”
 +    runs a program on your PATH with the args you give it, and
 +    “ext:some@extension” asks another extension that answers download
-+    messages. Args may use {url} {filename} {referer} {ua} and {cookies}.
++    messages. Args may use {url} {filename} {referer} {ua} {cookies}
++    {user} and {password}. Stored HTTP credentials and cookies travel with
++    the hand-off; {user} and {password} expand to nothing when the browser
++    holds none.
